@@ -16,6 +16,8 @@ and Claude-style coding assistants, while using original Python code.
   - `xaw chat` interactive shell UI
   - `xaw run -p "..."` headless one-shot mode
   - `xaw tui` Textual full-screen hybrid terminal UI
+  - `xaw desktop` clean-room local browser desktop UI
+  - `apps/macos/X Agentic Workflow.app` double-click macOS launcher
 - BYOK model providers:
   - Anthropic Messages API
   - OpenAI-compatible Chat Completions API
@@ -88,6 +90,7 @@ use its OpenAI-compatible base URL and model name.
 xaw doctor
 xaw chat
 xaw tui
+xaw desktop
 xaw run -p "list this project and explain what it does"
 ```
 
@@ -111,6 +114,20 @@ Resume a session:
 xaw sessions
 xaw chat --session 20260630-120000
 ```
+
+## macOS double-click app
+
+For GitHub download / developer-preview use, this repo includes:
+
+```text
+apps/macos/X Agentic Workflow.app
+```
+
+On macOS, double-clicking that app bundle prepares `.venv`, installs the local
+package, starts `xaw desktop`, and opens the clean-room browser UI.
+
+Details and customer notes:
+[docs/product/macos-app.md](docs/product/macos-app.md)
 
 ## Safety model
 
