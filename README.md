@@ -10,7 +10,7 @@ This repo contains two layers:
 The runtime targets the same category as Codex CLI, Gemini CLI, aider, Cline,
 and Claude-style coding assistants, while using original Python code.
 
-## v0.1 capability
+## Current capability
 
 - Hybrid terminal UI:
   - `xaw chat` interactive shell UI
@@ -95,9 +95,15 @@ xaw run -p "list this project and explain what it does"
 
 - left rail: workspace, provider, model, sessions, Skills, Hooks, MCP status
 - center: transcript and prompt composer
-- right rail: tool registry, approval status, keyboard shortcuts
+- right rail: live tool-call timeline, latest file diff, approval status,
+  keyboard shortcuts
 - shortcuts: `Ctrl+S` submit, `Ctrl+R` reset, `Ctrl+D` doctor, `Ctrl+A`
-  approval view, `Ctrl+L` clear, `Ctrl+Q` quit
+  approval view, `Ctrl+N/P` select a recent session, `Ctrl+O` open selected
+  session, `Ctrl+L` clear, `Ctrl+Q` quit
+
+When a model uses `write_file`, the TUI shows the latest unified diff in the
+Diff Viewer panel. Tool calls and tool results are also recorded in the Tool
+Timeline panel so a run is easier to audit.
 
 Resume a session:
 
@@ -134,9 +140,9 @@ xaw smoke-openai-compatible --allow-skip
 
 ## Release status
 
-Version `0.1.0` is published to PyPI:
+Version `0.2.0` is published to PyPI:
 
-<https://pypi.org/project/x-agentic-workflow/0.1.0/>
+<https://pypi.org/project/x-agentic-workflow/0.2.0/>
 
 Version `0.1.0` is also published to TestPyPI for install verification:
 

@@ -41,3 +41,13 @@ class ToolSpec:
     name: str
     description: str
     input_schema: dict[str, Any]
+
+
+@dataclass
+class AgentEvent:
+    kind: Literal["tool_call", "tool_result", "assistant", "error"]
+    content: str = ""
+    name: str | None = None
+    arguments: dict[str, Any] = field(default_factory=dict)
+    ok: bool | None = None
+    metadata: dict[str, object] = field(default_factory=dict)

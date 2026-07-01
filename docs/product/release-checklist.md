@@ -1,8 +1,8 @@
 # x-agentic-workflow release checklist
 
-Last updated: 2026-06-30
+Last updated: 2026-07-01
 
-## v0.2 release target
+## v0.3 release target
 
 - Package: `x-agentic-workflow`
 - CLI commands:
@@ -14,8 +14,10 @@ Last updated: 2026-06-30
   - `xaw smoke-openai-compatible`
 - Install target: `pipx install x-agentic-workflow`
 - UI target: `xaw tui` multi-panel hybrid terminal app with workspace status,
-  sessions, extension status, tool registry, approval status, transcript,
-  composer, and shortcut help.
+  selectable sessions, extension status, live tool-call timeline, latest file
+  diff viewer, approval status, transcript, composer, and shortcut help.
+- Runtime target: tool dispatch emits structured events and `write_file`
+  returns diff metadata for auditability.
 
 ## Required checks
 

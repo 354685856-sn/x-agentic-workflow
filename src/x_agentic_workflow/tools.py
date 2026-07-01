@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from difflib import unified_diff
 from pathlib import Path
 
 from .config import RuntimeConfig
@@ -15,6 +16,7 @@ from .ui import approve
 class ToolResult:
     ok: bool
     content: str
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 def tool_specs() -> list[ToolSpec]:
@@ -106,9 +108,26 @@ class ToolRegistry:
 
     def _write_file(self, rel: str, content: str) -> ToolResult:
         path = resolve_inside(self.config.workdir, rel)
+        existed = path.exists()
+        before = path.read_text(encoding="utf-8", errors="replace") if existed else ""
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        return ToolResult(True, f"Wrote {len(content)} chars to {rel}")
+        diff = "\n".join(
+            unified_diff(
+                before.splitlines(),
+                content.splitlines(),
+                fromfile=f"a/{rel}",
+                tofile=f"b/{rel}",
+                lineterm="",
+            )
+        )
+        metadata: dict[str, object] = {
+            "operation": "write_file",
+            "path": rel,
+            "diff": _truncate(diff, self.config.max_output_chars),
+            "existed": existed,
+        }
+        return ToolResult(True, f"Wrote {len(content)} chars to {rel}", metadata)
 
     def _list_dir(self, rel: str) -> ToolResult:
         path = resolve_inside(self.config.workdir, rel)

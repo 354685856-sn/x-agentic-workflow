@@ -13,6 +13,9 @@ def test_tui_app_is_textual_app() -> None:
     assert {"doctor", "approval_panel", "clear"}.issubset(
         {binding.action for binding in XawTuiApp.BINDINGS}
     )
+    assert {"next_session", "previous_session", "open_session"}.issubset(
+        {binding.action for binding in XawTuiApp.BINDINGS}
+    )
 
 
 def test_tui_panel_renderers_include_hybrid_sections(tmp_path) -> None:
@@ -38,6 +41,9 @@ def test_tui_panel_renderers_include_hybrid_sections(tmp_path) -> None:
         mcp_servers_count=3,
         tools=("read_file", "run_command"),
         approval_required=True,
+        selected_session_id="20260701-000000",
+        timeline=("→ write_file {'path': 'x.txt'}", "← write_file ok: Wrote x.txt"),
+        latest_diff="--- a/x.txt\n+++ b/x.txt\n@@\n-old\n+new",
         mode="Review",
     )
 
@@ -46,7 +52,14 @@ def test_tui_panel_renderers_include_hybrid_sections(tmp_path) -> None:
     assert "mcp servers: 3" in _render_extensions(state)
     assert "run_command" in _render_tools(state)
     assert "command approval: enabled" in _render_approval(state)
+    from x_agentic_workflow.tui import _render_diff, _render_timeline
+
+    assert "Tool Timeline" in _render_timeline(state)
+    assert "write_file" in _render_timeline(state)
+    assert "Diff Viewer" in _render_diff(state)
+    assert "+new" in _render_diff(state)
     assert "Ctrl+D doctor" in _render_help()
+    assert "Ctrl+O open session" in _render_help()
 
 
 def test_openai_compatible_smoke_can_skip_without_key(monkeypatch) -> None:
