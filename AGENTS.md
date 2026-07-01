@@ -1,5 +1,33 @@
 # SAFe Agent Team Quick Reference
 
+## Project-local product rules
+
+This repository now contains the `x-agentic-workflow` Python product runtime in
+`src/x_agentic_workflow` alongside the SAFe harness files.
+
+Primary product goal: a clean-room terminal agentic coding assistant with hybrid
+CLI/TUI, headless mode, BYOK multi-provider model calls, tool calling, approval
+sandbox, sessions, Skills, Hooks, MCP extension points, and multi-agent role
+interfaces.
+
+Do not copy, translate, or derive implementation details from restricted leaked
+source code. Use `docs/product/clean-room-scope.md` as the boundary document.
+
+Useful commands:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pytest
+.venv/bin/python -m ruff check src tests
+.venv/bin/python -m mypy src/x_agentic_workflow
+.venv/bin/xaw doctor
+```
+
+Secrets rule: never commit API keys. Runtime config stores provider metadata
+only; keys stay in environment variables such as `ANTHROPIC_API_KEY` or
+`OPENAI_API_KEY`.
+
 > **Philosophy**: "Search First, Reuse Always, Create Only When Necessary"
 >
 > Pattern discovery is MANDATORY before implementation.
