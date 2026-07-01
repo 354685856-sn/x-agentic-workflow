@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-01
 
-## v0.3 release target
+## v0.4 release target
 
 - Package: `x-agentic-workflow`
 - CLI commands:
@@ -18,6 +18,9 @@ Last updated: 2026-07-01
   diff viewer, approval status, transcript, composer, and shortcut help.
 - Runtime target: tool dispatch emits structured events and `write_file`
   returns diff metadata for auditability.
+- Desktop target: `xaw desktop` launches a clean-room local browser UI, and
+  `apps/macos/X Agentic Workflow.app` provides a GitHub-download developer
+  preview double-click launcher for macOS.
 
 ## Required checks
 

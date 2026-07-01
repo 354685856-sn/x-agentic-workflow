@@ -70,3 +70,12 @@ def test_openai_compatible_smoke_can_skip_without_key(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "SKIPPED" in result.output
+
+
+def test_desktop_command_is_registered() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["desktop", "--help"])
+
+    assert result.exit_code == 0
+    assert "clean-room browser desktop UI" in result.output

@@ -1,0 +1,36 @@
+#!/bin/zsh
+set -euo pipefail
+
+APP_EXEC="$0"
+APP_MACOS_DIR="$(cd "$(dirname "$APP_EXEC")" && pwd)"
+REPO_ROOT="$(cd "$APP_MACOS_DIR/../../../../.." && pwd)"
+LOG_DIR="$HOME/Library/Logs/x-agentic-workflow"
+LOG_FILE="$LOG_DIR/desktop-app.log"
+
+mkdir -p "$LOG_DIR"
+cd "$REPO_ROOT"
+
+{
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Starting X Agentic Workflow"
+  echo "Repo: $REPO_ROOT"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    osascript -e 'display dialog "python3 is required to run X Agentic Workflow. Install Python 3, then reopen the app." buttons {"OK"} default button "OK" with icon caution'
+    exit 1
+  fi
+
+  if [[ ! -x ".venv/bin/python" ]]; then
+    echo "Creating .venv"
+    python3 -m venv .venv
+  fi
+
+  if [[ ! -x ".venv/bin/xaw" ]]; then
+    echo "Installing local package"
+    .venv/bin/python -m pip install -q -e .
+  else
+    echo "Using existing local package"
+  fi
+
+  echo "Launching clean-room desktop UI"
+  exec .venv/bin/xaw desktop --host 127.0.0.1 --port 8765
+} >>"$LOG_FILE" 2>&1

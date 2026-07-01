@@ -91,6 +91,18 @@ def tui() -> None:
     XawTuiApp().run()
 
 
+@app.command()
+def desktop(
+    host: str = typer.Option("127.0.0.1", help="Host for the local clean-room UI server"),
+    port: int = typer.Option(8765, help="Port for the local clean-room UI server"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open the browser"),
+) -> None:
+    """Start the clean-room browser desktop UI."""
+    from .desktop import run_desktop
+
+    run_desktop(host=host, port=port, open_browser=not no_browser)
+
+
 @app.command("sessions")
 def sessions_cmd() -> None:
     """List saved sessions."""
