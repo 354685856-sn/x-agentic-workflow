@@ -13,7 +13,7 @@ from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 from .agent import Agent
 from .config import RuntimeConfig
 from .tools import tool_specs
-from .types import Message
+from .types import AgentEvent, Message
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,9 @@ class TuiPanelState:
     mcp_servers_count: int
     tools: tuple[str, ...]
     approval_required: bool
+    selected_session_id: str | None = None
+    timeline: tuple[str, ...] = ()
+    latest_diff: str = ""
     mode: str = "Chat"
 
 
@@ -107,6 +110,9 @@ class XawTuiApp(App[None]):
         Binding("ctrl+r", "reset", "Reset", show=True),
         Binding("ctrl+t", "focus_prompt", "Prompt", show=True),
         Binding("ctrl+a", "approval_panel", "Approval", show=True),
+        Binding("ctrl+n", "next_session", "Next session", show=True),
+        Binding("ctrl+p", "previous_session", "Previous session", show=True),
+        Binding("ctrl+o", "open_session", "Open session", show=True),
         Binding("ctrl+d", "doctor", "Doctor", show=True),
         Binding("ctrl+l", "clear", "Clear", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
@@ -121,7 +127,11 @@ class XawTuiApp(App[None]):
         super().__init__()
         self.config = config or RuntimeConfig.load(workdir=Path.cwd())
         self.agent = agent or Agent(self.config, session_id=session_id)
+        self.agent.event_sink = self._record_event
         self.mode = "Chat"
+        self.timeline: list[str] = []
+        self.latest_diff = ""
+        self.selected_session_index = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -136,7 +146,8 @@ class XawTuiApp(App[None]):
                     yield Input(placeholder="Ask x-agentic-workflow…", id="prompt")
                     yield Button("Send", id="send", variant="primary")
             with Vertical(id="right-rail"):
-                yield Static("", id="tools-panel", classes="panel")
+                yield Static("", id="timeline-panel", classes="panel")
+                yield Static("", id="diff-panel", classes="panel")
                 yield Static("", id="approval-panel", classes="panel")
                 yield Static("", id="help-panel", classes="panel")
         yield Footer()
@@ -191,6 +202,33 @@ class XawTuiApp(App[None]):
         self.query_one("#transcript", RichLog).clear()
         self._refresh_panels()
 
+    def action_next_session(self) -> None:
+        sessions = self._recent_sessions()
+        if sessions:
+            self.selected_session_index = (self.selected_session_index + 1) % len(sessions)
+        self._refresh_panels()
+
+    def action_previous_session(self) -> None:
+        sessions = self._recent_sessions()
+        if sessions:
+            self.selected_session_index = (self.selected_session_index - 1) % len(sessions)
+        self._refresh_panels()
+
+    def action_open_session(self) -> None:
+        session_id = self._selected_session_id()
+        if not session_id:
+            return
+        self.agent.session_id = session_id
+        self.agent.messages = self.agent.sessions.load(session_id)
+        if not self.agent.messages:
+            self.agent.messages = [Message(role="system", content=self.agent._system_prompt(""))]
+        self.timeline.clear()
+        self.latest_diff = ""
+        self.query_one("#transcript", RichLog).write(
+            f"[bold yellow]session[/bold yellow] opened {session_id}"
+        )
+        self._refresh_panels()
+
     def _submit(self, text: str) -> None:
         prompt = text.strip()
         if not prompt:
@@ -214,7 +252,7 @@ class XawTuiApp(App[None]):
         self._refresh_panels()
 
     def _state(self) -> TuiPanelState:
-        sessions = tuple(self.agent.sessions.list_sessions()[-8:])
+        sessions = tuple(self._recent_sessions())
         hooks_count = sum(1 for path in self.config.hooks_dir.rglob("*") if path.is_file())
         return TuiPanelState(
             provider=self.config.provider.name,
@@ -228,6 +266,9 @@ class XawTuiApp(App[None]):
             mcp_servers_count=len(self.agent.mcp.list_servers()),
             tools=tuple(spec.name for spec in tool_specs()),
             approval_required=self.config.require_command_approval,
+            selected_session_id=self._selected_session_id(),
+            timeline=tuple(self.timeline[-8:]),
+            latest_diff=self.latest_diff,
             mode=self.mode,
         )
 
@@ -236,9 +277,36 @@ class XawTuiApp(App[None]):
         self.query_one("#status-panel", Static).update(_render_status(state))
         self.query_one("#sessions-panel", Static).update(_render_sessions(state))
         self.query_one("#extensions-panel", Static).update(_render_extensions(state))
-        self.query_one("#tools-panel", Static).update(_render_tools(state))
+        self.query_one("#timeline-panel", Static).update(_render_timeline(state))
+        self.query_one("#diff-panel", Static).update(_render_diff(state))
         self.query_one("#approval-panel", Static).update(_render_approval(state))
         self.query_one("#help-panel", Static).update(_render_help())
+
+    def _record_event(self, event: AgentEvent) -> None:
+        if event.kind == "tool_call":
+            self.timeline.append(f"→ {event.name} {event.arguments}")
+        elif event.kind == "tool_result":
+            status = "ok" if event.ok else "failed"
+            self.timeline.append(f"← {event.name} {status}: {event.content}")
+            diff = event.metadata.get("diff")
+            if isinstance(diff, str) and diff:
+                self.latest_diff = diff
+        elif event.kind == "assistant":
+            self.timeline.append("✓ assistant response")
+        elif event.kind == "error":
+            self.timeline.append(f"! {event.content}")
+        self.timeline = self.timeline[-20:]
+
+    def _recent_sessions(self) -> list[str]:
+        return self.agent.sessions.list_sessions()[-8:]
+
+    def _selected_session_id(self) -> str | None:
+        sessions = self._recent_sessions()
+        if not sessions:
+            self.selected_session_index = 0
+            return None
+        self.selected_session_index %= len(sessions)
+        return sessions[self.selected_session_index]
 
 
 def _render_status(state: TuiPanelState) -> str:
@@ -259,7 +327,10 @@ def _render_sessions(state: TuiPanelState) -> str:
     lines = ["[bold cyan]Sessions[/bold cyan]", f"active: [bold]{state.session_id}[/bold]"]
     if state.sessions:
         lines.append("recent:")
-        lines.extend(f"• {session}" for session in reversed(state.sessions))
+        for session in reversed(state.sessions):
+            marker = ">" if session == state.selected_session_id else "•"
+            lines.append(f"{marker} {session}")
+        lines.append("Ctrl+N/P select · Ctrl+O open")
     else:
         lines.append("recent: none")
     return "\n".join(lines)
@@ -281,6 +352,24 @@ def _render_tools(state: TuiPanelState) -> str:
     return "\n".join(lines)
 
 
+def _render_timeline(state: TuiPanelState) -> str:
+    lines = ["[bold cyan]Tool Timeline[/bold cyan]"]
+    if state.timeline:
+        lines.extend(f"• {item}" for item in state.timeline)
+    else:
+        lines.append("waiting for tool calls")
+    lines.append("")
+    lines.append("[bold cyan]Tools[/bold cyan]")
+    lines.extend(f"• {name}" for name in state.tools)
+    return "\n".join(lines)
+
+
+def _render_diff(state: TuiPanelState) -> str:
+    if not state.latest_diff:
+        return "[bold cyan]Diff Viewer[/bold cyan]\nno file edits yet"
+    return f"[bold cyan]Diff Viewer[/bold cyan]\n{state.latest_diff}"
+
+
 def _render_approval(state: TuiPanelState) -> str:
     status = "enabled" if state.approval_required else "disabled"
     return (
@@ -299,6 +388,8 @@ def _render_help() -> str:
         "Ctrl+R reset session\n"
         "Ctrl+T focus prompt\n"
         "Ctrl+A approval view\n"
+        "Ctrl+N/P select session\n"
+        "Ctrl+O open session\n"
         "Ctrl+D doctor\n"
         "Ctrl+L clear log\n"
         "Ctrl+Q quit"

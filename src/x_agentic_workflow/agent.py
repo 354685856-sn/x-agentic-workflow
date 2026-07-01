@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from .config import RuntimeConfig
 from .hooks import HookRunner
 from .mcp import McpRegistry
@@ -10,7 +12,7 @@ from .providers import ModelProvider, build_provider
 from .sessions import SessionStore
 from .skills import SkillRegistry
 from .tools import ToolRegistry, tool_specs
-from .types import Message
+from .types import AgentEvent, Message
 from .ui import assistant, error, tool_call, tool_result, user_prompt
 
 BASE_SYSTEM_PROMPT = """You are x-agentic-workflow, a direct terminal coding assistant.
@@ -24,9 +26,11 @@ class Agent:
         config: RuntimeConfig,
         provider: ModelProvider | None = None,
         session_id: str | None = None,
+        event_sink: Callable[[AgentEvent], None] | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
+        self.event_sink = event_sink
         self.tools = ToolRegistry(config)
         self.sessions = SessionStore(config.sessions_dir)
         self.session_id = session_id or self.sessions.new_id()
@@ -70,6 +74,7 @@ class Agent:
             response = self._provider().complete(self.messages, tool_specs())
             if response.text:
                 final_text = response.text
+                self._emit(AgentEvent(kind="assistant", content=response.text))
                 if print_output:
                     assistant(response.text)
                 self.messages.append(Message(role="assistant", content=response.text))
@@ -77,9 +82,26 @@ class Agent:
                 self.sessions.save(self.session_id, self.messages)
                 return final_text
             for call in response.tool_calls:
+                self._emit(
+                    AgentEvent(
+                        kind="tool_call",
+                        name=call.name,
+                        arguments=call.arguments,
+                        content=f"{call.name}({call.arguments})",
+                    )
+                )
                 if print_output:
                     tool_call(call.name, call.arguments)
                 result = self.tools.dispatch(call.name, call.arguments)
+                self._emit(
+                    AgentEvent(
+                        kind="tool_result",
+                        name=call.name,
+                        content=result.content,
+                        ok=result.ok,
+                        metadata=result.metadata,
+                    )
+                )
                 if print_output:
                     tool_result(result.content)
                 self.messages.append(
@@ -90,9 +112,15 @@ class Agent:
                         content=result.content,
                     )
                 )
-        error("Tool loop limit reached.")
+        message = "Tool loop limit reached."
+        self._emit(AgentEvent(kind="error", content=message))
+        error(message)
         self.sessions.save(self.session_id, self.messages)
         return final_text
+
+    def _emit(self, event: AgentEvent) -> None:
+        if self.event_sink is not None:
+            self.event_sink(event)
 
     def _provider(self) -> ModelProvider:
         if self.provider is None:

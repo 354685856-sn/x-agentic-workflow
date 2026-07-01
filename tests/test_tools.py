@@ -34,3 +34,19 @@ def test_search_returns_matches(tmp_path: Path) -> None:
 
     assert result.ok
     assert "a.txt:2" in result.content
+
+
+def test_write_file_returns_diff_metadata_for_existing_file(tmp_path: Path) -> None:
+    (tmp_path / "hello.txt").write_text("old\n", encoding="utf-8")
+    config = RuntimeConfig(workdir=tmp_path)
+
+    result = ToolRegistry(config).dispatch(
+        "write_file", {"path": "hello.txt", "content": "new\n"}
+    )
+
+    assert result.ok
+    assert result.metadata["operation"] == "write_file"
+    assert result.metadata["path"] == "hello.txt"
+    assert result.metadata["existed"] is True
+    assert "-old" in str(result.metadata["diff"])
+    assert "+new" in str(result.metadata["diff"])
