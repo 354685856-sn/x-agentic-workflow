@@ -23,6 +23,7 @@ Last updated: 2026-06-30
 .venv/bin/xaw --version
 .venv/bin/xaw smoke-openai-compatible --allow-skip
 .venv/bin/python -m build
+.venv/bin/python -m twine check dist/*
 ```
 
 ## Optional real provider smoke
@@ -45,3 +46,16 @@ values.
   provider responses.
 - Keep `docs/product/clean-room-scope.md` in the release.
 - Verify `README.md` documents `xaw tui` as Textual full-screen UI.
+- TestPyPI v0.1.0 is published at:
+  `https://test.pypi.org/project/x-agentic-workflow/0.1.0/`
+- Before production PyPI upload, use a fresh PyPI token. If a token was pasted
+  into chat or a screenshot, delete it in the package index account and create a
+  replacement.
+- Production upload command:
+
+```bash
+TWINE_USERNAME=__token__ .venv/bin/python -m twine upload dist/*
+```
+
+Enter the PyPI API token only at the terminal prompt. Do not paste tokens into
+chat, screenshots, docs, or shell history.

@@ -33,6 +33,25 @@ and Claude-style coding assistants, while using original Python code.
 
 ## Install for development
 
+Install from TestPyPI during release validation:
+
+```bash
+python3 -m venv /tmp/xaw-testpypi
+/tmp/xaw-testpypi/bin/python -m pip install \
+  --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple \
+  x-agentic-workflow
+/tmp/xaw-testpypi/bin/xaw --version
+```
+
+After the production PyPI release:
+
+```bash
+pipx install x-agentic-workflow
+```
+
+For local development:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -104,3 +123,12 @@ python -m ruff check .
 python -m mypy src/x_agentic_workflow
 xaw smoke-openai-compatible --allow-skip
 ```
+
+## Release status
+
+Version `0.1.0` is published to TestPyPI for install verification:
+
+<https://test.pypi.org/project/x-agentic-workflow/0.1.0/>
+
+Production PyPI publishing should use a fresh PyPI API token and `twine upload
+dist/*` after the release checklist passes.

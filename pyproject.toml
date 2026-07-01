@@ -11,6 +11,20 @@ requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Nan Ge" }]
 keywords = ["agent", "cli", "coding-assistant", "byok", "mcp", "skills"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development",
+  "Topic :: Terminals",
+]
 dependencies = [
   "anthropic>=0.40.0",
   "openai>=1.0.0",
@@ -31,6 +45,12 @@ dev = [
 [project.scripts]
 xaw = "x_agentic_workflow.cli:app"
 x-agentic-workflow = "x_agentic_workflow.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/354685856-sn/x-agentic-workflow"
+Repository = "https://github.com/354685856-sn/x-agentic-workflow"
+Issues = "https://github.com/354685856-sn/x-agentic-workflow/issues"
+Documentation = "https://github.com/354685856-sn/x-agentic-workflow#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/x_agentic_workflow"]
