@@ -129,6 +129,14 @@ package, starts `xaw desktop`, and opens the clean-room browser UI.
 Details and customer notes:
 [docs/product/macos-app.md](docs/product/macos-app.md)
 
+Preview DMG packaging is documented in:
+[docs/product/macos-distribution.md](docs/product/macos-distribution.md)
+
+Clean-room product lessons and legal open-source reference planning:
+
+- [docs/product/competitor-release-lessons.md](docs/product/competitor-release-lessons.md)
+- [docs/product/legal-open-source-reference-map.md](docs/product/legal-open-source-reference-map.md)
+
 ## Safety model
 
 - File access is restricted to the selected project directory.

@@ -21,6 +21,8 @@ xaw desktop --host 127.0.0.1 --port 8765
 ```
 
 - Opens the clean-room local UI in the default browser.
+- If port `8765` is already in use, `xaw desktop` falls back to an available
+  local port and opens that URL.
 
 ## Logs
 
