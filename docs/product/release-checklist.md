@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-01
 
-## v0.4 release target
+## v0.5 release target
 
 - Package: `x-agentic-workflow`
 - CLI commands:
@@ -21,6 +21,8 @@ Last updated: 2026-07-01
 - Desktop target: `xaw desktop` launches a clean-room local browser UI, and
   `apps/macos/X Agentic Workflow.app` provides a GitHub-download developer
   preview double-click launcher for macOS.
+- Distribution target: `scripts/build-macos-preview-dmg.sh` builds a preview
+  DMG with a bundled clean-room source snapshot for customer testing.
 
 ## Required checks
 
@@ -29,10 +31,30 @@ Last updated: 2026-07-01
 .venv/bin/python -m ruff check src tests
 .venv/bin/python -m mypy src/x_agentic_workflow
 .venv/bin/xaw --version
+.venv/bin/xaw desktop --help
 .venv/bin/xaw smoke-openai-compatible --allow-skip
 .venv/bin/python -m build
 .venv/bin/python -m twine check dist/*
 ```
+
+## Desktop delivery checks
+
+```bash
+plutil -lint "apps/macos/X Agentic Workflow.app/Contents/Info.plist"
+test -x "apps/macos/X Agentic Workflow.app/Contents/MacOS/x-agentic-workflow"
+./scripts/build-macos-preview-dmg.sh
+./scripts/smoke-macos-preview-dmg.sh
+```
+
+Before public customer distribution, additionally verify:
+
+- macOS first launch from a clean user account.
+- API keys and provider headers never appear in logs.
+- Local browser UI starts after app relaunch.
+- Session list and recent project state survive app restart.
+- DMG/app version matches `pyproject.toml`, `__version__`, Git tag, and release
+  notes.
+- Signed/notarized builds pass Gatekeeper without manual `xattr` commands.
 
 ## Optional real provider smoke
 
@@ -53,6 +75,8 @@ values.
 - Do not commit `.env`, API keys, local sessions, or smoke output containing
   provider responses.
 - Keep `docs/product/clean-room-scope.md` in the release.
+- Keep `docs/product/competitor-release-lessons.md` limited to public product
+  and release observations; do not add restricted source-derived details.
 - Verify `README.md` documents `xaw tui` as Textual full-screen UI.
 - TestPyPI v0.1.0 is published at:
   `https://test.pypi.org/project/x-agentic-workflow/0.1.0/`

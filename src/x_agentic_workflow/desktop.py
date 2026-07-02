@@ -1,9 +1,9 @@
 """Clean-room local browser UI for x-agentic-workflow."""
 # ruff: noqa: E501
 
-from __future__ import annotations
-
+import errno
 import json
+import socket
 import threading
 import webbrowser
 from http import HTTPStatus
@@ -26,17 +26,38 @@ def run_desktop(
 
     runtime_config = config or RuntimeConfig.load(workdir=Path.cwd())
     app = DesktopApp(runtime_config)
-    server = ThreadingHTTPServer((host, port), _handler_for(app))
+    server = _create_server(host, port, _handler_for(app))
     url = f"http://{host}:{server.server_port}"
     if open_browser:
         threading.Timer(0.2, lambda: webbrowser.open(url)).start()
-    print(f"x-agentic-workflow desktop UI running at {url}")  # noqa: T201
+    print(f"x-agentic-workflow desktop UI running at {url}", flush=True)  # noqa: T201
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+
+
+def _create_server(
+    host: str,
+    port: int,
+    handler: type[BaseHTTPRequestHandler],
+) -> ThreadingHTTPServer:
+    if port != 0 and _port_has_listener(host, port):
+        return ThreadingHTTPServer((host, 0), handler)
+    try:
+        return ThreadingHTTPServer((host, port), handler)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE or port == 0:
+            raise
+        return ThreadingHTTPServer((host, 0), handler)
+
+
+def _port_has_listener(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex((host, port)) == 0
 
 
 class DesktopApp:
