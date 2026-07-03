@@ -187,7 +187,11 @@ xaw smoke-openai-compatible --allow-skip
 
 ## Release status
 
-Current local release target: `0.13.0`, focused on safe desktop text attachments.
+Current local release target: `0.14.0`, focused on provider status and form reliability.
+
+Version `0.13.0` is published on GitHub with safe desktop text attachments:
+
+<https://github.com/354685856-sn/x-agentic-workflow/releases/tag/v0.13.0>
 
 Version `0.12.0` is published on GitHub with desktop session recovery and filtering:
 

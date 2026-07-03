@@ -1125,6 +1125,13 @@ def render_desktop_html() -> str:
     .provider-form { margin-bottom: 18px; }
     .provider-card { border-radius: 8px; min-height: 88px; }
     .provider-card.default { border-color: #ad6048; }
+    .provider-save-status {
+      border: 1px solid #dbe3ee; border-radius: 999px; padding: 8px 12px;
+      color: #667085; background: #fbfcfe; font-size: 13px; white-space: nowrap;
+    }
+    .provider-save-status.dirty { border-color: #f0c36d; color: #8a5a00; background: #fffaf0; }
+    .provider-actions button:disabled { cursor: default; opacity: .62; }
+    .provider-card { cursor: default; }
     @media (max-width: 860px) {
       .app { grid-template-columns: 1fr; }
       aside { display: none; }
@@ -1228,7 +1235,7 @@ def render_desktop_html() -> str:
                   <div class="settings-title">服务商</div>
                   <div class="settings-subtitle">管理 API 服务商以访问模型。密钥只保存在本机环境变量或后续钥匙串方案中。</div>
                 </div>
-                <button class="primary-btn">＋ 添加服务商</button>
+                <div class="provider-save-status" id="providerSaveStatus">已保存</div>
               </div>
               <div class="provider-form">
                 <div class="field">
@@ -1257,24 +1264,9 @@ def render_desktop_html() -> str:
                 <div class="settings-result" id="providerResult">密钥值不会写入配置文件；这里只保存环境变量名、模型和 base URL。</div>
               </div>
               <div class="provider-list">
-                <div class="provider-card default">
-                  <div class="drag">⋮⋮</div><div class="status-dot on"></div>
-                  <div><div class="provider-name">DeepSeek <span class="badge">OpenAI-compatible</span><span class="badge hot">默认</span></div><div class="provider-meta">https://api.deepseek.com/v1 · deepseek-chat / deepseek-reasoner</div></div>
-                  <span></span>
-                </div>
-                <div class="provider-card">
-                  <div class="drag">⋮⋮</div><div class="status-dot"></div>
-                  <div><div class="provider-name">OpenAI <span class="badge hot">Responses / Chat Completions</span></div><div class="provider-meta">https://api.openai.com/v1 · gpt-4.1 / o-series / compatible models</div></div>
-                  <span></span>
-                </div>
-                <div class="provider-card">
-                  <div class="drag">⋮⋮</div><div class="status-dot"></div>
-                  <div><div class="provider-name">Anthropic 官方 <span class="badge">Messages API</span></div><div class="provider-meta">Claude 模型 · BYOK 环境变量 / 后续钥匙串方案</div></div>
-                  <span></span>
-                </div>
-                <div class="provider-card">
-                  <div class="drag">⋮⋮</div><div class="status-dot"></div>
-                  <div><div class="provider-name">OpenRouter / DashScope / LM Studio <span class="badge">OpenAI-compatible</span></div><div class="provider-meta">自定义 base URL、模型名、请求头和本地模型入口</div></div>
+                <div class="provider-card default" id="savedProviderCard">
+                  <div class="drag">⋮⋮</div><div class="status-dot" id="savedProviderDot"></div>
+                  <div><div class="provider-name"><span id="savedProviderName">Provider</span> <span class="badge" id="savedProviderProtocol">protocol</span><span class="badge hot">默认</span></div><div class="provider-meta" id="savedProviderMeta"></div></div>
                   <span></span>
                 </div>
               </div>
@@ -1327,6 +1319,8 @@ def render_desktop_html() -> str:
     const MAX_ATTACHMENT_TOTAL_BYTES = 256 * 1024;
     let pendingAttachments = [];
     let attachmentEpoch = 0;
+    let providerFormDirty = false;
+    let providerSubmitting = false;
     async function api(path, body) {
       const res = await fetch(path, { method: body ? 'POST' : 'GET', headers: {'content-type': 'application/json'}, body: body ? JSON.stringify(body) : undefined });
       return await res.json();
@@ -1349,10 +1343,7 @@ def render_desktop_html() -> str:
       $('restorePill').textContent = state.sessionRestored ? `已恢复 · ${state.sessionId}` : '';
       if (state.attachmentError) showAttachmentStatus(state.attachmentError.message);
       $('model').textContent = state.model;
-      $('providerName').value = state.provider;
-      $('providerModel').value = state.model;
-      $('providerBaseUrl').value = state.baseUrl || '';
-      $('providerKeyEnv').value = state.apiKeyEnv;
+      renderProviderState(state);
       if (state.providerSave) showProviderResult(state.providerSave);
       if (state.providerTest) showProviderResult(state.providerTest);
       renderProjectValidation(state.projectValidation);
@@ -1377,6 +1368,53 @@ def render_desktop_html() -> str:
         baseUrl: $('providerBaseUrl').value,
         apiKeyEnv: $('providerKeyEnv').value
       };
+    }
+    function renderProviderState(state) {
+      if (!providerFormDirty || (state.providerSave && state.providerSave.ok)) {
+        $('providerName').value = state.provider;
+        $('providerModel').value = state.model;
+        $('providerBaseUrl').value = state.baseUrl || '';
+        $('providerKeyEnv').value = state.apiKeyEnv;
+        providerFormDirty = false;
+      }
+      const displayName = state.provider === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible';
+      $('savedProviderName').textContent = displayName;
+      $('savedProviderProtocol').textContent = state.provider;
+      $('savedProviderMeta').textContent = `${state.baseUrl || 'Default endpoint'} · ${state.model} · ${state.apiKeyEnv}`;
+      $('savedProviderDot').classList.toggle('on', !!state.apiKeyPresent);
+      const saveStatus = $('providerSaveStatus');
+      saveStatus.textContent = providerFormDirty
+        ? '未保存更改'
+        : state.apiKeyPresent ? '已保存 · 密钥可用' : '已保存 · 等待环境变量';
+      saveStatus.classList.toggle('dirty', providerFormDirty);
+    }
+    function markProviderDirty() {
+      providerFormDirty = true;
+      const saveStatus = $('providerSaveStatus');
+      saveStatus.textContent = '未保存更改';
+      saveStatus.classList.add('dirty');
+    }
+    function setProviderSubmitting(active, action) {
+      providerSubmitting = active;
+      $('saveProvider').disabled = active;
+      $('testProvider').disabled = active;
+      $('saveProvider').textContent = active && action === 'save' ? '保存中...' : '保存默认服务商';
+      $('testProvider').textContent = active && action === 'test' ? '测试中...' : '测试连接';
+    }
+    async function runProviderAction(action) {
+      if (providerSubmitting) return;
+      setProviderSubmitting(true, action);
+      showProviderResult({ok: true, message: action === 'save' ? '正在保存配置...' : '正在测试连接...'});
+      try {
+        const path = action === 'save' ? '/api/provider' : '/api/test-provider';
+        const state = await api(path, providerPayload());
+        if (action === 'save' && state.providerSave && state.providerSave.ok) {
+          providerFormDirty = false;
+        }
+        render(state);
+      } finally {
+        setProviderSubmitting(false, action);
+      }
     }
     function showProviderResult(result) {
       const box = $('providerResult');
@@ -1553,11 +1591,12 @@ def render_desktop_html() -> str:
       const collapsed = app.classList.toggle('inspector-collapsed');
       $('inspectorToggle').title = collapsed ? '展开右侧栏' : '收起右侧栏';
     };
-    $('saveProvider').onclick = async () => render(await api('/api/provider', providerPayload()));
-    $('testProvider').onclick = async () => {
-      showProviderResult({ok: true, message: 'Testing connection...'});
-      render(await api('/api/test-provider', providerPayload()));
-    };
+    ['providerName', 'providerModel', 'providerBaseUrl', 'providerKeyEnv'].forEach(id => {
+      $(id).addEventListener('input', markProviderDirty);
+      $(id).addEventListener('change', markProviderDirty);
+    });
+    $('saveProvider').onclick = () => runProviderAction('save');
+    $('testProvider').onclick = () => runProviderAction('test');
     async function switchProject(path) {
       const target = (path || $('projectPathInput').value).trim();
       const button = $('switchProject');
