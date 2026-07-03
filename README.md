@@ -29,6 +29,10 @@ and Claude-style coding assistants, while using original Python code.
   - validate the current project path from the local browser UI
   - report key project files, git state, and recommended verification commands
   - keep validation read-only for the first v0.7 workflow slice
+- Desktop Project Switching:
+  - switch the active local project path from the desktop UI
+  - persist recent project paths in local config
+  - reset the desktop chat and re-run project validation after a switch
 - Sandboxed tools:
   - `read_file`
   - `write_file`
@@ -175,7 +179,11 @@ xaw smoke-openai-compatible --allow-skip
 
 ## Release status
 
-Current local release target: `0.7.0`, focused on desktop Project Validation.
+Current local release target: `0.8.0`, focused on desktop Project Switching.
+
+Version `0.7.0` is published on GitHub with desktop Project Validation:
+
+<https://github.com/354685856-sn/x-agentic-workflow/releases/tag/v0.7.0>
 
 Version `0.6.0` is published on GitHub with desktop Provider Settings:
 

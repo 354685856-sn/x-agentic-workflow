@@ -92,6 +92,7 @@ class DesktopApp:
             "sessions": list(reversed(self.sessions.list_sessions()[-8:])),
             "messages": self.messages[-30:],
             "projectValidation": self.project_validation,
+            "recentProjects": self._recent_project_entries(),
         }
 
     def new_chat(self) -> dict[str, Any]:
@@ -218,6 +219,65 @@ class DesktopApp:
         self.project_validation = _validate_project(self.config.workdir)
         return self.state()
 
+    def switch_project(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_path = str(payload.get("path", "")).strip()
+        if not raw_path:
+            return {
+                **self.state(),
+                "projectSwitch": {"ok": False, "message": "Project path is required."},
+            }
+        target = Path(raw_path).expanduser().resolve()
+        if not target.exists():
+            return {
+                **self.state(),
+                "projectSwitch": {"ok": False, "message": f"Project path does not exist: {target}"},
+            }
+        if not target.is_dir():
+            return {
+                **self.state(),
+                "projectSwitch": {"ok": False, "message": f"Project path is not a directory: {target}"},
+            }
+
+        self.config.workdir = target
+        self._remember_project(target)
+        self.config.save()
+        self.agent = Agent(self.config)
+        self.messages = []
+        self.project_validation = _validate_project(target)
+        return {
+            **self.state(),
+            "projectSwitch": {"ok": True, "message": f"Switched to {target}."},
+        }
+
+    def _remember_project(self, path: Path) -> None:
+        target = str(path.resolve())
+        seen: set[str] = set()
+        projects: list[str] = []
+        for candidate in [target, *self.config.recent_projects]:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            projects.append(candidate)
+        self.config.recent_projects = projects[:8]
+
+    def _recent_project_entries(self) -> list[dict[str, Any]]:
+        current = str(self.config.workdir)
+        seen: set[str] = set()
+        entries: list[dict[str, Any]] = []
+        for candidate in [current, *self.config.recent_projects]:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            path = Path(candidate)
+            entries.append(
+                {
+                    "name": path.name or candidate,
+                    "path": candidate,
+                    "active": candidate == current,
+                }
+            )
+        return entries[:8]
+
 
 def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
     class DesktopHandler(BaseHTTPRequestHandler):
@@ -249,6 +309,9 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/api/project/validate":
                 self._send_json(app.validate_project())
+                return
+            if self.path == "/api/project/switch":
+                self._send_json(app.switch_project(payload))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -460,6 +523,10 @@ def render_desktop_html() -> str:
       font-size: 14px; font-weight: 420; border-radius: 10px;
     }
     .conversation-row.active { background: #e9e9e7; padding-left: 0; margin-left: 36px; font-weight: 520; }
+    .conversation-row button {
+      border: 0; background: transparent; color: inherit; font: inherit; text-align: left;
+      overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; padding: 0;
+    }
     .conversation-row.muted { color: #b7b7b5; }
     .conversation-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .shortcut { background: #eeeeed; color: #858585; border-radius: 13px; padding: 2px 8px; font-size: 12px; font-weight: 430; }
@@ -603,7 +670,19 @@ def render_desktop_html() -> str:
     .pill { color: #536172; background: #f8fafc; }
     .pill:disabled { color: #8b95a1; cursor: default; opacity: .72; }
     .send { background: #dd6d4c; color: white; border-color: #dd6d4c; padding: 0 16px; min-width: 86px; font-weight: 500; }
-    .project-picker { display: none; }
+    .project-picker {
+      display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center;
+      border-top: 1px solid #ececea; padding: 10px 12px 12px; background: #fbfbfa;
+    }
+    .project-picker input {
+      min-width: 0; border: 1px solid #dededc; border-radius: 10px; height: 34px;
+      padding: 0 10px; font: inherit; font-size: 13px; color: #333; background: white;
+    }
+    .project-picker button {
+      border: 1px solid #dededc; border-radius: 10px; height: 34px; padding: 0 12px;
+      background: white; color: #536172; font-size: 13px; cursor: pointer;
+    }
+    .project-picker button:disabled { color: #9ba4af; cursor: default; opacity: .75; }
     .model { display: flex; gap: 12px; align-items: center; color: var(--muted); }
     .chips { display: none; }
     .chip { border: 1px solid var(--line); background: white; border-radius: 13px; padding: 10px 16px; box-shadow: 0 3px 10px rgba(0,0,0,.05); font-size: 16px; }
@@ -768,24 +847,11 @@ def render_desktop_html() -> str:
           <div class="side-heading">项目</div>
           <div class="project-block">
             <div class="project-header"><span class="project-icon">▱</span><span id="currentProjectName">x-agentic-workflow</span></div>
-            <div class="conversation-row muted"><span class="conversation-title">暂无对话</span></div>
+            <div class="conversation-row active"><span class="conversation-title" id="currentProjectPath">354685856-sn/x-agentic-workflow</span><span class="shortcut">当前</span></div>
           </div>
           <div class="project-block">
-            <div class="project-header"><span class="project-icon">▱</span><span>Codex</span></div>
-            <div class="conversation-row active"><span class="conversation-title" id="currentProjectPath">354685856-sn/x-agentic-workflow</span><span class="shortcut">⌘1</span></div>
-            <div class="conversation-row"><span class="conversation-title">我会切，但先做最后一次...</span><span class="shortcut">⌘2</span></div>
-            <div class="conversation-row"><span class="conversation-title">微信开发者工具已打开，进程...</span><span class="shortcut">⌘3</span></div>
-            <div class="conversation-row"><span class="conversation-title">你能用GitHub这个项目scrap...</span><span class="shortcut">⌘4</span></div>
-            <div class="conversation-row"><span class="conversation-title">新对话</span><span class="shortcut">⌘5</span></div>
-            <div class="conversation-row muted"><span class="conversation-title">展开显示</span></div>
-          </div>
-          <div class="project-block">
-            <div class="project-header"><span class="project-icon">▱</span><span>Obsidian Vault</span></div>
-            <div class="conversation-row"><span class="conversation-title">新对话</span><span class="shortcut">⌘9</span></div>
-          </div>
-          <div class="project-block">
-            <div class="project-header"><span class="project-icon">▱</span><span>New project</span></div>
-            <div class="conversation-row"><span class="conversation-title">电脑</span><span class="relative-age">1个月</span></div>
+            <div class="project-header"><span class="project-icon">▱</span><span>最近项目</span></div>
+            <div id="recentProjects"><div class="conversation-row muted"><span class="conversation-title">暂无最近项目</span></div></div>
           </div>
           <div class="side-heading">对话</div>
           <div id="recents"><div class="conversation-row muted"><span class="conversation-title">暂无聊天</span></div></div>
@@ -843,7 +909,10 @@ def render_desktop_html() -> str:
               <div class="composer">
                 <div class="notice"><span id="status">x-agentic-workflow is ready.</span><small id="workdir"></small></div>
                 <textarea id="prompt" placeholder="Describe a task or ask a question"></textarea>
-                <div class="project-picker">▱ 选择项目...</div>
+                <div class="project-picker">
+                  <input id="projectPathInput" placeholder="/path/to/project" />
+                  <button id="switchProject">切换项目</button>
+                </div>
               </div>
               <div class="composer-actions">
                 <div class="left-tools"><button class="pill" id="validateProject">验证项目</button><button class="pill">Accept edits</button><button class="round">＋</button><button class="round">⌄</button></div>
@@ -983,6 +1052,7 @@ def render_desktop_html() -> str:
       $('workdir').textContent = projectPath;
       $('currentProjectName').textContent = projectName;
       $('currentProjectPath').textContent = projectPath;
+      $('projectPathInput').value = state.workdir;
       $('chatTab').textContent = projectName;
       $('model').textContent = state.model;
       $('providerName').value = state.provider;
@@ -992,9 +1062,14 @@ def render_desktop_html() -> str:
       if (state.providerSave) showProviderResult(state.providerSave);
       if (state.providerTest) showProviderResult(state.providerTest);
       renderProjectValidation(state.projectValidation);
+      if (state.projectSwitch && !state.projectSwitch.ok) {
+        renderProjectValidation({ok: false, summary: state.projectSwitch.message, checks: [], recommendations: []});
+      }
+      renderRecentProjects(state.recentProjects || []);
       $('recents').innerHTML = state.sessions.map((s, i) => `<div class="conversation-row" data-session="${s}"><span class="conversation-title">${s}</span><span class="shortcut">⌘${i + 1}</span></div>`).join('') || '<div class="conversation-row muted"><span class="conversation-title">暂无聊天</span></div>';
       $('messages').innerHTML = state.messages.map(m => `<div class="msg ${m.role}">${escapeHtml(m.content)}</div>`).join('');
       document.querySelectorAll('[data-session]').forEach(btn => btn.onclick = async () => render(await api('/api/open', {sessionId: btn.dataset.session})));
+      document.querySelectorAll('[data-project-path]').forEach(btn => btn.onclick = async () => switchProject(btn.dataset.projectPath));
     }
     function providerPayload() {
       return {
@@ -1020,6 +1095,18 @@ def render_desktop_html() -> str:
       const checks = result.checks.map(check => `<div class="check-row"><span class="check-status ${check.status}">${check.status}</span><span>${escapeHtml(check.name)}: ${escapeHtml(check.detail)}</span></div>`).join('');
       const commands = result.recommendations.map(cmd => `<span class="command-chip">${escapeHtml(cmd)}</span>`).join('');
       box.innerHTML = `<div class="validation-summary ${tone}">${escapeHtml(result.summary)}</div>${checks}<div class="command-list">${commands}</div>`;
+    }
+    function renderRecentProjects(projects) {
+      const box = $('recentProjects');
+      if (!projects.length) {
+        box.innerHTML = '<div class="conversation-row muted"><span class="conversation-title">暂无最近项目</span></div>';
+        return;
+      }
+      box.innerHTML = projects.map((project, i) => {
+        const active = project.active ? ' active' : '';
+        const badge = project.active ? '当前' : `⌘${i + 1}`;
+        return `<div class="conversation-row${active}"><button data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}">${escapeHtml(project.name)}</button><span class="shortcut">${badge}</span></div>`;
+      }).join('');
     }
     function escapeHtml(text) {
       return text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -1054,6 +1141,22 @@ def render_desktop_html() -> str:
       showProviderResult({ok: true, message: 'Testing connection...'});
       render(await api('/api/test-provider', providerPayload()));
     };
+    async function switchProject(path) {
+      const target = (path || $('projectPathInput').value).trim();
+      const button = $('switchProject');
+      if (!target) return;
+      button.disabled = true;
+      button.textContent = '切换中...';
+      renderProjectValidation({ok: true, summary: '正在切换并验证项目...', checks: [], recommendations: []});
+      try {
+        render(await api('/api/project/switch', {path: target}));
+      } finally {
+        button.disabled = false;
+        button.textContent = '切换项目';
+      }
+    }
+    $('switchProject').onclick = async () => switchProject();
+    $('projectPathInput').addEventListener('keydown', e => { if (e.key === 'Enter') switchProject(); });
     $('validateProject').onclick = async () => {
       const button = $('validateProject');
       button.disabled = true;

@@ -49,6 +49,7 @@ class RuntimeConfig:
     skills_dir: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR / "skills")
     hooks_dir: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR / "hooks")
     mcp_config_file: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR / "mcp.json")
+    recent_projects: list[str] = field(default_factory=list)
 
     @property
     def api_key(self) -> str:
@@ -85,6 +86,11 @@ class RuntimeConfig:
             config_file=path,
             max_output_chars=int(data.get("max_output_chars", 20_000)),
             require_command_approval=bool(data.get("require_command_approval", True)),
+            recent_projects=[
+                str(Path(raw).expanduser().resolve())
+                for raw in data.get("recent_projects", [])
+                if isinstance(raw, str) and raw.strip()
+            ][:8],
         )
 
     def validate_for_model_call(self) -> None:
@@ -108,5 +114,6 @@ class RuntimeConfig:
             "temperature": self.temperature,
             "max_output_chars": self.max_output_chars,
             "require_command_approval": self.require_command_approval,
+            "recent_projects": self.recent_projects[:8],
         }
         self.config_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
