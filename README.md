@@ -21,6 +21,10 @@ and Claude-style coding assistants, while using original Python code.
 - BYOK model providers:
   - Anthropic Messages API
   - OpenAI-compatible Chat Completions API
+- Desktop Provider Settings:
+  - save provider metadata without storing API key values
+  - run a local provider connectivity check
+  - redact API keys and token-like values from connection-test errors
 - Sandboxed tools:
   - `read_file`
   - `write_file`
@@ -145,6 +149,8 @@ Clean-room product lessons and legal open-source reference planning:
   default.
 - Config files store provider metadata only. API keys stay in environment
   variables.
+- Desktop provider connection-test errors are redacted before they are returned
+  to the local browser UI.
 
 ## Clean-room rule
 
@@ -164,6 +170,12 @@ xaw smoke-openai-compatible --allow-skip
 ```
 
 ## Release status
+
+Current local release target: `0.6.0`, focused on desktop Provider Settings.
+
+Version `0.5.0` is published on GitHub as a macOS preview distribution:
+
+<https://github.com/354685856-sn/x-agentic-workflow/releases/tag/v0.5.0>
 
 Version `0.2.0` is published to PyPI:
 

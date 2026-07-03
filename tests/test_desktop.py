@@ -1,17 +1,159 @@
+import re
 import socket
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+from typing import Any
 
-from x_agentic_workflow.desktop import _create_server, render_desktop_html
+from x_agentic_workflow.config import RuntimeConfig
+from x_agentic_workflow.desktop import DesktopApp, _create_server, render_desktop_html
+from x_agentic_workflow.types import Message, ModelResponse, ToolSpec
 
 
 def test_desktop_html_contains_clean_room_app_shell() -> None:
     html = render_desktop_html()
 
     assert "x-agentic-workflow" in html
-    assert "Local clean-room UI" in html
-    assert "New chat" in html
-    assert "How can I help you today?" in html
+    assert "新对话" in html
+    assert "Codex" in html
+    assert "354685856-sn/x-agentic-workflow" in html
+    assert "我的仓库位置" not in html
+    assert "Obsidian Vault" in html
+    assert "inspector-card" in html
+    assert "inspectorToggle" in html
+    assert "inspector-collapsed" in html
+    assert "title=\"列表\"" in html
+    assert "输出" in html
+    assert "任务" in html
+    assert "Describe a task or ask a question" in html
+    assert "What’s up next, sn?" in html
+    assert "Overview" in html
     assert "/api/ask" in html
+    assert "服务商" in html
+    assert "DeepSeek" in html
+    assert "MCP" in html
+    assert "Token 用量" in html
+
+
+def test_desktop_composer_actions_are_outside_prompt_box() -> None:
+    html = render_desktop_html()
+
+    composer_match = re.search(
+        r'<div class="composer">(?P<body>.*?)</div>\s*<div class="composer-actions">',
+        html,
+        re.DOTALL,
+    )
+
+    assert composer_match is not None
+    assert "composer-actions" not in composer_match.group("body")
+    assert "right-tools" not in composer_match.group("body")
+
+
+def test_desktop_composer_dock_is_bottom_aligned() -> None:
+    html = render_desktop_html()
+
+    assert "html, body { height: 100%; }" in html
+    assert ".app { height: 100vh; overflow: hidden;" in html
+    assert (
+        "main { position: relative; display: flex; flex-direction: column; "
+        "min-width: 0; min-height: 0; height: 100vh;"
+    ) in html
+    assert ".stage { flex: 1; min-height: 0; display: flex; align-items: stretch;" in html
+    assert "padding: 0 40px 8px" in html
+    assert ".hero { width: min(980px, 100%); height: 100%; min-height: 0;" in html
+    assert ".composer-dock { width: min(1064px, 100%); margin: auto auto 0;" in html
+
+
+def test_desktop_provider_settings_save_without_secret_value(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.save_provider_settings(
+        {
+            "provider": "openai-compatible",
+            "model": "deepseek-chat",
+            "baseUrl": "https://api.deepseek.com/v1",
+            "apiKeyEnv": "DEEPSEEK_API_KEY",
+        }
+    )
+
+    saved = (tmp_path / "config.json").read_text(encoding="utf-8")
+    assert state["providerSave"]["ok"] is True
+    assert '"api_key_env": "DEEPSEEK_API_KEY"' in saved
+    assert "deepseek-chat" in saved
+    assert "sk-" not in saved
+
+
+def test_desktop_provider_connection_error_redacts_secret(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-testsecret123456789")
+
+    class LeakyProvider:
+        def complete(self, messages: list[Message], tools: list[ToolSpec]) -> ModelResponse:
+            del messages, tools
+            raise RuntimeError(
+                "failed with sk-testsecret123456789 and api_key=sk-testsecret123456789"
+            )
+
+    def fake_build_provider(config: RuntimeConfig) -> LeakyProvider:
+        del config
+        return LeakyProvider()
+
+    monkeypatch.setattr("x_agentic_workflow.providers.build_provider", fake_build_provider)
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.test_provider_settings(
+        {
+            "provider": "openai-compatible",
+            "model": "deepseek-chat",
+            "baseUrl": "https://api.deepseek.com/v1",
+            "apiKeyEnv": "DEEPSEEK_API_KEY",
+        }
+    )
+
+    message = state["providerTest"]["message"]
+    assert state["providerTest"]["ok"] is False
+    assert "sk-testsecret123456789" not in message
+    assert "[REDACTED]" in message
+
+
+def test_desktop_provider_connection_validates_payload(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    unsupported = app.test_provider_settings({"provider": "custom", "model": "m"})
+    missing_model = app.test_provider_settings({"provider": "anthropic", "model": ""})
+    missing_env = app.test_provider_settings(
+        {"provider": "anthropic", "model": "claude-3-5-sonnet-latest", "apiKeyEnv": ""}
+    )
+
+    assert unsupported["providerTest"]["ok"] is False
+    assert "Unsupported provider" in unsupported["providerTest"]["message"]
+    assert missing_model["providerTest"]["message"] == "Model is required."
+    assert missing_env["providerTest"]["message"] == "API key environment variable is required."
 
 
 def test_desktop_server_falls_back_when_preferred_port_is_busy() -> None:
