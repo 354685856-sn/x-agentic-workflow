@@ -611,8 +611,9 @@ def render_desktop_html() -> str:
     .main-nav { display: grid; gap: 10px; padding: 0 22px 24px; }
     .main-nav button {
       border: 0; background: transparent; color: #3f4247; display: flex; align-items: center; gap: 16px;
-      height: 32px; padding: 0; font-size: 15px; font-weight: 450; cursor: pointer;
+      min-height: 32px; padding: 0 8px; font-size: 15px; font-weight: 450; cursor: pointer; border-radius: 8px;
     }
+    .main-nav button:hover, .main-nav button.active { background: #eeeeed; color: #202020; }
     .main-nav .badge-count { margin-left: auto; background: #ececeb; color: #686a6d; border-radius: 15px; padding: 2px 9px; font-weight: 450; font-size: 13px; }
     .side-scroll { flex: 1; overflow: auto; padding-bottom: 24px; }
     .side-heading { color: #aaa; font-size: 13px; font-weight: 450; margin: 18px 0 14px; padding: 0 0; }
@@ -926,6 +927,87 @@ def render_desktop_html() -> str:
     .badge { font-size: 13px; padding: 3px 8px; border-radius: 7px; background: #edf2f7; color: #7b8795; font-weight: 760; }
     .badge.hot { background: #fff0e9; color: #cf5f35; }
     .settings-note { margin-top: 28px; color: #728094; line-height: 1.55; font-size: 15px; }
+    .app { grid-template-columns: 388px minmax(720px, 1fr); background: #fff; }
+    .app.inspector-collapsed { grid-template-columns: 388px minmax(720px, 1fr); }
+    aside {
+      background: #f3f6fa;
+      border-right: 1px solid #dfe5ee;
+      padding: 14px 0 0;
+    }
+    .sidebar-chrome { grid-template-columns: 72px 1fr; padding: 0 16px 18px; }
+    .sidebar-arrows { gap: 18px; font-size: 18px; color: #7f8b9a; }
+    .main-nav { padding: 0 16px 22px; gap: 8px; }
+    .main-nav button {
+      min-height: 44px; padding: 0 14px; border-radius: 10px; gap: 14px;
+      font-size: 16px; color: #596474;
+    }
+    .main-nav button:hover, .main-nav button.active {
+      background: #fff; color: #202633; box-shadow: 0 1px 0 rgba(24, 39, 64, .04);
+    }
+    .sidebar-section { padding: 0 16px 0 18px; }
+    .side-heading { color: #202633; font-size: 14px; font-weight: 760; margin: 22px 0 12px 6px; }
+    .project-header { padding: 0 6px; font-size: 15px; font-weight: 720; color: #202633; }
+    .conversation-row {
+      margin-left: 32px; min-height: 34px; padding: 0 10px; border-radius: 10px;
+      color: #596474; font-size: 14px;
+    }
+    .conversation-row.active { margin-left: 32px; padding-left: 10px; background: #fff; color: #202633; }
+    .sidebar-footer { padding: 14px 16px; border-top-color: #dfe5ee; }
+    .account-card { grid-template-columns: 32px 1fr; min-height: 48px; border: 1px solid transparent; border-radius: 12px; padding: 0 12px; }
+    .account-card:hover { border-color: #e5a400; background: #fff; }
+    .account-avatar { width: 0; height: 0; overflow: hidden; }
+    .account-chevron { display: none; }
+    .topbar {
+      height: 64px; grid-template-columns: 1fr auto; padding: 0; border-bottom: 1px solid #e7ebf1;
+      background: #fff;
+    }
+    .mode-tabs { height: 100%; }
+    .mode-tab {
+      min-width: 250px; border-right: 1px solid #eef1f5; border-bottom-width: 3px;
+      font-size: 15px; font-weight: 640; color: #697586;
+    }
+    .mode-tab.active { color: #202633; border-bottom-color: #ad6048; }
+    .terminal { margin-right: 24px; color: #7d8795; }
+    .stage { padding: 0; background: #fff; }
+    .hero { width: min(1080px, 100%); padding: 0 32px 22px; }
+    .hero-main {
+      width: min(720px, 100%); margin: auto auto 0; display: grid; justify-items: center;
+      text-align: center; flex: 1; align-content: center;
+    }
+    .hero-logo {
+      width: 92px; height: 92px; border: 1px solid #edf1f6; border-radius: 24px;
+      margin: 0 0 30px; color: #2d7df0; background: #fff; box-shadow: 0 8px 28px rgba(31, 45, 69, .08);
+      font-size: 42px;
+    }
+    .greeting {
+      display: grid; justify-items: center; margin: 0; color: #101828;
+      font-size: 32px; font-weight: 780; letter-spacing: 0;
+    }
+    .subline { margin: 16px 0 0; color: #667085; font-size: 17px; max-width: 460px; }
+    .composer-dock { width: min(1068px, 100%); margin: 0 auto; padding-top: 20px; }
+    .composer-context { display: none; }
+    .composer {
+      border: 2px solid #dce5ef; border-radius: 20px; box-shadow: 0 10px 34px rgba(31,45,69,.12);
+      min-width: 0;
+    }
+    textarea { min-height: 138px; padding: 24px 26px 16px; font-size: 17px; }
+    .composer-actions { border-top: 1px solid #e7ebf1; padding: 14px 18px; align-items: center; }
+    .send { min-width: 116px; height: 44px; border-radius: 14px; background: #d8b8ad; border-color: #d8b8ad; }
+    .project-picker { border-top: 1px solid #e7ebf1; padding: 14px 22px; background: #fff; }
+    .messages { width: min(900px, 100%); max-height: 180px; text-align: left; }
+    .inspector { display: none; }
+    .settings-layout { grid-template-columns: 250px 1fr; min-height: calc(100vh - 64px); }
+    .settings-nav { background: #fff; border-right: 1px solid #e7ebf1; padding: 18px 0; }
+    .settings-nav button {
+      min-height: 58px; border-radius: 0; padding: 0 26px; font-size: 17px; font-weight: 560; color: #596474;
+    }
+    .settings-nav button.active { background: #eef3f9; color: #202633; font-weight: 760; }
+    .settings-panel { padding: 36px 44px; max-width: 1040px; }
+    .settings-title { font-size: 24px; }
+    .settings-subtitle { font-size: 16px; }
+    .provider-form { margin-bottom: 18px; }
+    .provider-card { border-radius: 8px; min-height: 88px; }
+    .provider-card.default { border-color: #ad6048; }
     @media (max-width: 860px) {
       .app { grid-template-columns: 1fr; }
       aside { display: none; }
@@ -949,11 +1031,12 @@ def render_desktop_html() -> str:
         <div class="traffic"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
         <div class="sidebar-arrows"><span>▯</span><span>‹</span><span>›</span></div>
       </div>
+      <div class="brand">
+        <div class="brand-left"><span class="logo">X</span><span>X Agentic Workflow</span></div>
+      </div>
       <nav class="main-nav">
-        <button id="newChat">✎ <span>新对话</span></button>
-        <button>⌕ <span>搜索</span></button>
-        <button>◷ <span>已安排</span><span class="badge-count">57</span></button>
-        <button>◎ <span>插件</span></button>
+        <button class="active" id="newChat">＋ <span>新建会话</span></button>
+        <button id="navSettings">⚙ <span>设置</span></button>
       </nav>
       <div class="side-scroll">
         <div class="sidebar-section">
@@ -990,67 +1073,31 @@ def render_desktop_html() -> str:
         <div class="screen active" id="chatScreen">
           <div class="hero">
             <div class="hero-main">
-              <div class="greeting"><span class="hero-logo">✳</span>What’s up next, sn?</div>
-              <div class="subline">Code mode is ready for repo work, provider setup, tools, approvals, and clean-room product shipping.</div>
-              <div class="usage-card">
-                <div class="usage-tabs">
-                  <div class="tab-group"><button class="mini-tab active">Overview</button><button class="mini-tab">Models</button></div>
-                  <div class="tab-group"><button class="mini-tab active">All</button><button class="mini-tab">30d</button><button class="mini-tab">7d</button></div>
-                </div>
-                <div class="stats-grid">
-                  <div class="stat"><div class="stat-label">Sessions</div><div class="stat-value">12</div></div>
-                  <div class="stat"><div class="stat-label">Messages</div><div class="stat-value">1,091</div></div>
-                  <div class="stat"><div class="stat-label">Total tokens</div><div class="stat-value">1.5M</div></div>
-                  <div class="stat"><div class="stat-label">Active days</div><div class="stat-value">5</div></div>
-                  <div class="stat"><div class="stat-label">Current streak</div><div class="stat-value">1d</div></div>
-                  <div class="stat"><div class="stat-label">Longest streak</div><div class="stat-value">1d</div></div>
-                  <div class="stat"><div class="stat-label">Peak hour</div><div class="stat-value">6 PM</div></div>
-                  <div class="stat"><div class="stat-label">Favorite model</div><div class="stat-value">XAW Pro</div></div>
-                </div>
-                <div class="heatmap">
-                  <span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span>
-                  <span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell on"></span><span class="cell"></span><span class="cell"></span><span class="cell hot"></span><span class="cell"></span><span class="cell"></span><span class="cell on"></span>
-                  <span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell on"></span><span class="cell"></span><span class="cell"></span>
-                  <span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell hot"></span><span class="cell"></span><span class="cell"></span><span class="cell on"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span>
-                </div>
-                <div class="usage-note">You’ve used local clean-room workflows across CLI, TUI, desktop, releases, and provider setup.</div>
-              </div>
+              <div class="hero-logo">X</div>
+              <h1 class="greeting">新建会话</h1>
+              <div class="subline">开始一个新的编码会话。XAW 已准备好帮你构建、调试和整理项目。</div>
               <div class="messages" id="messages"></div>
             </div>
             <div class="composer-dock">
-              <div class="composer-context"><span class="context-chip">▰ Local</span><span class="context-chip">▱ mac</span><span class="context-chip">▣</span></div>
               <div class="composer">
                 <div class="notice"><span id="status">x-agentic-workflow is ready.</span><small id="workdir"></small></div>
-                <textarea id="prompt" placeholder="Describe a task or ask a question"></textarea>
+                <textarea id="prompt" placeholder="随便问点什么..."></textarea>
                 <div class="project-picker">
                   <input id="projectPathInput" placeholder="/path/to/project" />
                   <button id="switchProject">切换项目</button>
                 </div>
               </div>
               <div class="composer-actions">
-                <div class="left-tools"><button class="pill" id="validateProject">验证项目</button><button class="pill">Accept edits</button><button class="round">＋</button><button class="round">⌄</button></div>
-                <div class="right-tools"><span class="model" id="model">model</span><button class="pill">High</button><button class="send" id="send">↵</button></div>
+                <div class="left-tools"><button class="pill" id="validateProject">验证项目</button><button class="round">＋</button></div>
+                <div class="right-tools"><span class="model" id="model">model</span><button class="send" id="send">运行</button></div>
               </div>
             </div>
           </div>
         </div>
         <div class="screen" id="settingsScreen">
-          <div class="settings-layout">
+            <div class="settings-layout">
             <div class="settings-nav">
               <button class="active">▤ 服务商</button>
-              <button>☷ 通用</button>
-              <button>▦ H5 访问</button>
-              <button>▰ IM 接入</button>
-              <button>▸ 终端</button>
-              <button>▤ MCP</button>
-              <button>▣ Agents</button>
-              <button>✦ 技能</button>
-              <button>▱ 记忆</button>
-              <button>⌘ 插件</button>
-              <button>◉ Computer Use</button>
-              <button>▥ Token 用量</button>
-              <button>⌬ Trace</button>
-              <button>▧ 诊断</button>
             </div>
             <div class="settings-panel">
               <div class="settings-head">
@@ -1246,6 +1293,9 @@ def render_desktop_html() -> str:
       $('chatTab').classList.toggle('active', chat);
       $('settingsTab').classList.toggle('active', !chat);
     }
+    function setNavActive(id) {
+      document.querySelectorAll('.main-nav button').forEach(btn => btn.classList.toggle('active', btn.id === id));
+    }
     async function send() {
       const prompt = $('prompt').value.trim();
       if (!prompt) return;
@@ -1255,10 +1305,15 @@ def render_desktop_html() -> str:
     }
     $('send').onclick = send;
     $('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
-    $('newChat').onclick = async () => { showScreen('chat'); render(await api('/api/new', {})); };
-    $('settingsBtn').onclick = () => showScreen('settings');
-    $('settingsTab').onclick = () => showScreen('settings');
-    $('chatTab').onclick = () => showScreen('chat');
+    $('newChat').onclick = async () => {
+      showScreen('chat');
+      setNavActive('newChat');
+      render(await api('/api/new', {}));
+    };
+    $('navSettings').onclick = () => { setNavActive('navSettings'); showScreen('settings'); };
+    $('settingsBtn').onclick = () => { setNavActive('navSettings'); showScreen('settings'); };
+    $('settingsTab').onclick = () => { setNavActive('navSettings'); showScreen('settings'); };
+    $('chatTab').onclick = () => { setNavActive('newChat'); showScreen('chat'); };
     $('inspectorToggle').onclick = () => {
       const app = document.querySelector('.app');
       const collapsed = app.classList.toggle('inspector-collapsed');

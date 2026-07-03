@@ -20,7 +20,13 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     html = render_desktop_html()
 
     assert "x-agentic-workflow" in html
-    assert "新对话" in html
+    assert "新建会话" in html
+    assert "navSettings" in html
+    assert "已安排" not in html
+    assert "插件" not in html
+    assert "navSearch" not in html
+    assert "navScheduled" not in html
+    assert "navPlugins" not in html
     assert "354685856-sn/x-agentic-workflow" in html
     assert "当前" in html
     assert "我的仓库位置" not in html
@@ -39,9 +45,9 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "/api/diff/select" in html
     assert "data-diff-index" in html
     assert "任务" in html
-    assert "Describe a task or ask a question" in html
-    assert "What’s up next, sn?" in html
-    assert "Overview" in html
+    assert "随便问点什么..." in html
+    assert "开始一个新的编码会话" in html
+    assert "Overview" not in html
     assert "/api/ask" in html
     assert "验证项目" in html
     assert "验证中..." in html
@@ -56,8 +62,7 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "项目验证" in html
     assert "服务商" in html
     assert "DeepSeek" in html
-    assert "MCP" in html
-    assert "Token 用量" in html
+    assert "Token 用量" not in html
 
 
 def test_desktop_records_write_file_ledger_and_latest_diff(tmp_path: Path) -> None:
