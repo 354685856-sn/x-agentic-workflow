@@ -1,3 +1,4 @@
+import json
 import re
 import socket
 from http.server import BaseHTTPRequestHandler
@@ -33,6 +34,10 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "Diff" in html
     assert "latestDiff" in html
     assert "fileChanges" in html
+    assert "selectedDiff" in html
+    assert "selectedDiffIndex" in html
+    assert "/api/diff/select" in html
+    assert "data-diff-index" in html
     assert "任务" in html
     assert "Describe a task or ask a question" in html
     assert "What’s up next, sn?" in html
@@ -85,6 +90,106 @@ def test_desktop_records_write_file_ledger_and_latest_diff(tmp_path: Path) -> No
     assert state["fileChanges"][0]["path"] == "README.md"
     assert state["fileChanges"][0]["existed"] is True
     assert state["latestDiff"]["diff"].startswith("--- a/README.md")
+    session_data = json.loads(
+        app.sessions.path_for(app.agent.session_id).read_text(encoding="utf-8")
+    )
+    assert session_data["file_changes"][0]["path"] == "README.md"
+
+
+def test_desktop_restores_file_ledger_when_opening_session(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+    session_id = "restore-session"
+    app.sessions.save(session_id, [Message(role="user", content="hello")])
+    app.sessions.save_file_changes(
+        session_id,
+        [
+            {
+                "path": "one.txt",
+                "ok": True,
+                "existed": False,
+                "summary": "created one",
+                "diff": "--- /dev/null\n+++ b/one.txt",
+            },
+            {
+                "path": "two.txt",
+                "ok": True,
+                "existed": True,
+                "summary": "updated two",
+                "diff": "--- a/two.txt\n+++ b/two.txt",
+            },
+        ],
+    )
+
+    state = app.open_session(session_id)
+
+    assert [change["path"] for change in state["fileChanges"]] == ["one.txt", "two.txt"]
+    assert state["selectedDiffIndex"] == 1
+    assert state["selectedDiff"]["path"] == "two.txt"
+    assert state["messages"] == [{"role": "user", "content": "hello"}]
+
+
+def test_desktop_selects_prior_diff(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+    app.file_changes = [
+        {"path": "one.txt", "ok": True, "existed": False, "summary": "", "diff": "one diff"},
+        {"path": "two.txt", "ok": True, "existed": True, "summary": "", "diff": "two diff"},
+    ]
+    app.selected_diff_index = 1
+
+    state = app.select_diff({"index": 0})
+    missing = app.select_diff({"index": 99})
+
+    assert state["diffSelect"]["ok"] is True
+    assert state["selectedDiffIndex"] == 0
+    assert state["selectedDiff"]["path"] == "one.txt"
+    assert state["latestDiff"]["diff"] == "one diff"
+    assert missing["diffSelect"]["ok"] is False
+
+
+def test_session_save_preserves_file_changes_and_old_sessions_load(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+    session_id = "compat-session"
+    app.sessions.save_file_changes(
+        session_id,
+        [{"path": "README.md", "ok": True, "existed": True, "summary": "", "diff": "diff"}],
+    )
+    app.sessions.save(session_id, [Message(role="user", content="keep metadata")])
+    legacy_id = "legacy-session"
+    app.sessions.path_for(legacy_id).write_text(
+        json.dumps({"session_id": legacy_id, "messages": []}) + "\n",
+        encoding="utf-8",
+    )
+
+    saved = json.loads(app.sessions.path_for(session_id).read_text(encoding="utf-8"))
+    legacy_state = app.open_session(legacy_id)
+
+    assert saved["file_changes"][0]["path"] == "README.md"
+    assert legacy_state["fileChanges"] == []
+    assert legacy_state["selectedDiff"] is None
 
 
 def test_desktop_clears_file_ledger_on_new_chat_and_project_switch(tmp_path: Path) -> None:

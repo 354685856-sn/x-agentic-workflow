@@ -187,7 +187,11 @@ xaw smoke-openai-compatible --allow-skip
 
 ## Release status
 
-Current local release target: `0.10.0`, focused on desktop File Ledger.
+Current local release target: `0.11.0`, focused on persisted desktop File Ledger.
+
+Version `0.10.0` is published on GitHub with desktop File Ledger:
+
+<https://github.com/354685856-sn/x-agentic-workflow/releases/tag/v0.10.0>
 
 Version `0.9.0` is published on GitHub with desktop Project Sessions:
 
