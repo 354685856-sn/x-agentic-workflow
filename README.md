@@ -25,6 +25,10 @@ and Claude-style coding assistants, while using original Python code.
   - save provider metadata without storing API key values
   - run a local provider connectivity check
   - redact API keys and token-like values from connection-test errors
+- Desktop Project Validation:
+  - validate the current project path from the local browser UI
+  - report key project files, git state, and recommended verification commands
+  - keep validation read-only for the first v0.7 workflow slice
 - Sandboxed tools:
   - `read_file`
   - `write_file`
@@ -171,7 +175,11 @@ xaw smoke-openai-compatible --allow-skip
 
 ## Release status
 
-Current local release target: `0.6.0`, focused on desktop Provider Settings.
+Current local release target: `0.7.0`, focused on desktop Project Validation.
+
+Version `0.6.0` is published on GitHub with desktop Provider Settings:
+
+<https://github.com/354685856-sn/x-agentic-workflow/releases/tag/v0.6.0>
 
 Version `0.5.0` is published on GitHub as a macOS preview distribution:
 

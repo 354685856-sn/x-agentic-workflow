@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import threading
 import webbrowser
 from http import HTTPStatus
@@ -77,6 +78,7 @@ class DesktopApp:
         self.sessions = SessionStore(config.sessions_dir)
         self.agent = Agent(config)
         self.messages: list[dict[str, str]] = []
+        self.project_validation: dict[str, Any] | None = None
 
     def state(self) -> dict[str, Any]:
         return {
@@ -89,6 +91,7 @@ class DesktopApp:
             "sessionId": self.agent.session_id,
             "sessions": list(reversed(self.sessions.list_sessions()[-8:])),
             "messages": self.messages[-30:],
+            "projectValidation": self.project_validation,
         }
 
     def new_chat(self) -> dict[str, Any]:
@@ -211,6 +214,10 @@ class DesktopApp:
             }
         return {**self.state(), "providerTest": {"ok": True, "message": "Connection test passed."}}
 
+    def validate_project(self) -> dict[str, Any]:
+        self.project_validation = _validate_project(self.config.workdir)
+        return self.state()
+
 
 def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
     class DesktopHandler(BaseHTTPRequestHandler):
@@ -239,6 +246,9 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/api/test-provider":
                 self._send_json(app.test_provider_settings(payload))
+                return
+            if self.path == "/api/project/validate":
+                self._send_json(app.validate_project())
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -285,6 +295,110 @@ def _redact_secret_match(match: re.Match[str]) -> str:
         key, _, _value = text.partition("=")
         return f"{key}=[REDACTED]"
     return "[REDACTED]"
+
+
+def _validate_project(workdir: Path) -> dict[str, Any]:
+    checks: list[dict[str, str]] = []
+    recommendations: list[str] = []
+    files: list[str] = []
+
+    def add_check(name: str, status: str, detail: str) -> None:
+        checks.append({"name": name, "status": status, "detail": detail})
+
+    if not workdir.exists():
+        return {
+            "ok": False,
+            "path": str(workdir),
+            "summary": "Project path does not exist.",
+            "checks": [{"name": "Path", "status": "fail", "detail": str(workdir)}],
+            "files": [],
+            "recommendations": [],
+            "git": "not checked",
+        }
+    if not workdir.is_dir():
+        return {
+            "ok": False,
+            "path": str(workdir),
+            "summary": "Project path is not a directory.",
+            "checks": [{"name": "Path", "status": "fail", "detail": str(workdir)}],
+            "files": [],
+            "recommendations": [],
+            "git": "not checked",
+        }
+
+    add_check("Path", "pass", str(workdir))
+
+    key_files = [
+        "AGENTS.md",
+        "README.md",
+        "pyproject.toml",
+        "package.json",
+        "app.json",
+        "docs/product/clean-room-scope.md",
+    ]
+    for rel in key_files:
+        if (workdir / rel).exists():
+            files.append(rel)
+    if files:
+        add_check("Key files", "pass", ", ".join(files))
+    else:
+        add_check("Key files", "warn", "No AGENTS.md, README.md, pyproject.toml, or package.json found.")
+
+    git_summary = _git_status_summary(workdir)
+    add_check("Git", git_summary["status"], git_summary["detail"])
+
+    if (workdir / "pyproject.toml").exists():
+        recommendations.extend(
+            [
+                ".venv/bin/python -m pytest",
+                ".venv/bin/python -m ruff check src tests",
+                ".venv/bin/python -m mypy src/x_agentic_workflow",
+            ]
+        )
+    if (workdir / "package.json").exists():
+        recommendations.extend(["npm test", "npm run lint", "npm run build"])
+    if not recommendations:
+        recommendations.append("Inspect README.md or AGENTS.md for project-specific verification commands.")
+
+    has_fail = any(check["status"] == "fail" for check in checks)
+    has_warn = any(check["status"] == "warn" for check in checks)
+    summary = "Project validation passed." if not has_warn else "Project validation passed with warnings."
+    if has_fail:
+        summary = "Project validation failed."
+    return {
+        "ok": not has_fail,
+        "path": str(workdir),
+        "summary": summary,
+        "checks": checks,
+        "files": files,
+        "recommendations": recommendations,
+        "git": git_summary["detail"],
+    }
+
+
+def _git_status_summary(workdir: Path) -> dict[str, str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workdir), "status", "--short", "--branch"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"status": "warn", "detail": f"Git status unavailable: {exc}"}
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "Not a git repository.").strip()
+        return {"status": "warn", "detail": detail}
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        return {"status": "pass", "detail": "Clean git repository."}
+    branch = lines[0]
+    changes = lines[1:]
+    if changes:
+        return {"status": "warn", "detail": f"{branch}; {len(changes)} uncommitted change(s)."}
+    return {"status": "pass", "detail": branch}
 
 
 def render_desktop_html() -> str:
@@ -487,6 +601,7 @@ def render_desktop_html() -> str:
       cursor: pointer;
     }
     .pill { color: #536172; background: #f8fafc; }
+    .pill:disabled { color: #8b95a1; cursor: default; opacity: .72; }
     .send { background: #dd6d4c; color: white; border-color: #dd6d4c; padding: 0 16px; min-width: 86px; font-weight: 500; }
     .project-picker { display: none; }
     .model { display: flex; gap: 12px; align-items: center; color: var(--muted); }
@@ -558,6 +673,24 @@ def render_desktop_html() -> str:
     .file-row span:last-child, .task-row span:last-child { overflow: hidden; text-overflow: ellipsis; }
     .more-link { color: #999; font-size: 14px; margin-top: 6px; }
     .source-dots { display: flex; flex-wrap: wrap; gap: 10px; color: #717171; font-size: 16px; }
+    .validation-box { display: grid; gap: 10px; }
+    .validation-summary { font-size: 14px; color: #30343a; line-height: 1.4; }
+    .validation-summary.ok { color: #0f7f58; }
+    .validation-summary.warn { color: #9a5b0b; }
+    .check-row {
+      display: grid; grid-template-columns: 56px 1fr; gap: 8px; align-items: start;
+      font-size: 13px; color: #4a5564; line-height: 1.35;
+    }
+    .check-status { font-weight: 760; text-transform: uppercase; font-size: 11px; color: #7d8794; }
+    .check-status.pass { color: #0f9f6e; }
+    .check-status.warn { color: #b76e00; }
+    .check-status.fail { color: #b42318; }
+    .command-list { display: grid; gap: 6px; margin-top: 4px; }
+    .command-chip {
+      display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      border: 1px solid #e7ebf1; border-radius: 7px; padding: 6px 8px; color: #536172;
+      background: #fbfcfe; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
     .settings-layout { width: 100%; display: grid; grid-template-columns: 252px 1fr; min-height: calc(100vh - 64px); }
     .settings-nav { border-right: 1px solid var(--line); background: #f7faff; padding: 24px 14px; overflow: auto; }
     .settings-nav button {
@@ -634,12 +767,12 @@ def render_desktop_html() -> str:
         <div class="sidebar-section">
           <div class="side-heading">项目</div>
           <div class="project-block">
-            <div class="project-header"><span class="project-icon">▱</span><span>Claude-cc-haha_全部...</span></div>
+            <div class="project-header"><span class="project-icon">▱</span><span id="currentProjectName">x-agentic-workflow</span></div>
             <div class="conversation-row muted"><span class="conversation-title">暂无对话</span></div>
           </div>
           <div class="project-block">
             <div class="project-header"><span class="project-icon">▱</span><span>Codex</span></div>
-            <div class="conversation-row active"><span class="conversation-title">354685856-sn/x-agentic-workflow</span><span class="shortcut">⌘1</span></div>
+            <div class="conversation-row active"><span class="conversation-title" id="currentProjectPath">354685856-sn/x-agentic-workflow</span><span class="shortcut">⌘1</span></div>
             <div class="conversation-row"><span class="conversation-title">我会切，但先做最后一次...</span><span class="shortcut">⌘2</span></div>
             <div class="conversation-row"><span class="conversation-title">微信开发者工具已打开，进程...</span><span class="shortcut">⌘3</span></div>
             <div class="conversation-row"><span class="conversation-title">你能用GitHub这个项目scrap...</span><span class="shortcut">⌘4</span></div>
@@ -669,7 +802,7 @@ def render_desktop_html() -> str:
     <main>
       <div class="topbar">
         <div class="mode-tabs">
-          <button class="mode-tab active" id="chatTab">354685856-sn/x-agentic-workflow</button>
+          <button class="mode-tab active" id="chatTab">x-agentic-workflow</button>
           <button class="mode-tab" id="settingsTab">⚙ 设置</button>
         </div>
         <span class="terminal">›_</span>
@@ -713,7 +846,7 @@ def render_desktop_html() -> str:
                 <div class="project-picker">▱ 选择项目...</div>
               </div>
               <div class="composer-actions">
-                <div class="left-tools"><button class="pill">Accept edits</button><button class="round">＋</button><button class="round">⌄</button></div>
+                <div class="left-tools"><button class="pill" id="validateProject">验证项目</button><button class="pill">Accept edits</button><button class="round">＋</button><button class="round">⌄</button></div>
                 <div class="right-tools"><span class="model" id="model">model</span><button class="pill">High</button><button class="send" id="send">↵</button></div>
               </div>
             </div>
@@ -807,6 +940,12 @@ def render_desktop_html() -> str:
       </div>
       <div class="inspector-card">
         <div class="inspector-section">
+          <div class="inspector-title">项目验证</div>
+          <div class="validation-box" id="projectValidation">
+            <div class="validation-summary">尚未验证当前项目。</div>
+          </div>
+        </div>
+        <div class="inspector-section">
           <div class="inspector-title">输出</div>
           <div class="file-row"><span>▣</span><span>macos-distribution.md</span></div>
           <div class="file-row"><span>▣</span><span>release-checklist.md</span></div>
@@ -837,8 +976,14 @@ def render_desktop_html() -> str:
       return await res.json();
     }
     function render(state) {
+      const parts = state.workdir.split('/').filter(Boolean);
+      const projectName = parts[parts.length - 1] || state.workdir;
+      const projectPath = parts.slice(-2).join('/') || projectName;
       $('status').textContent = state.apiKeyPresent ? 'x-agentic-workflow is ready.' : 'API key missing. Set your BYOK environment variable to run prompts.';
-      $('workdir').textContent = state.workdir.split('/').slice(-2).join('/');
+      $('workdir').textContent = projectPath;
+      $('currentProjectName').textContent = projectName;
+      $('currentProjectPath').textContent = projectPath;
+      $('chatTab').textContent = projectName;
       $('model').textContent = state.model;
       $('providerName').value = state.provider;
       $('providerModel').value = state.model;
@@ -846,6 +991,7 @@ def render_desktop_html() -> str:
       $('providerKeyEnv').value = state.apiKeyEnv;
       if (state.providerSave) showProviderResult(state.providerSave);
       if (state.providerTest) showProviderResult(state.providerTest);
+      renderProjectValidation(state.projectValidation);
       $('recents').innerHTML = state.sessions.map((s, i) => `<div class="conversation-row" data-session="${s}"><span class="conversation-title">${s}</span><span class="shortcut">⌘${i + 1}</span></div>`).join('') || '<div class="conversation-row muted"><span class="conversation-title">暂无聊天</span></div>';
       $('messages').innerHTML = state.messages.map(m => `<div class="msg ${m.role}">${escapeHtml(m.content)}</div>`).join('');
       document.querySelectorAll('[data-session]').forEach(btn => btn.onclick = async () => render(await api('/api/open', {sessionId: btn.dataset.session})));
@@ -863,6 +1009,17 @@ def render_desktop_html() -> str:
       box.textContent = result.message;
       box.classList.toggle('ok', !!result.ok);
       box.classList.toggle('bad', !result.ok);
+    }
+    function renderProjectValidation(result) {
+      const box = $('projectValidation');
+      if (!result) {
+        box.innerHTML = '<div class="validation-summary">尚未验证当前项目。</div>';
+        return;
+      }
+      const tone = result.ok ? 'ok' : 'warn';
+      const checks = result.checks.map(check => `<div class="check-row"><span class="check-status ${check.status}">${check.status}</span><span>${escapeHtml(check.name)}: ${escapeHtml(check.detail)}</span></div>`).join('');
+      const commands = result.recommendations.map(cmd => `<span class="command-chip">${escapeHtml(cmd)}</span>`).join('');
+      box.innerHTML = `<div class="validation-summary ${tone}">${escapeHtml(result.summary)}</div>${checks}<div class="command-list">${commands}</div>`;
     }
     function escapeHtml(text) {
       return text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -896,6 +1053,18 @@ def render_desktop_html() -> str:
     $('testProvider').onclick = async () => {
       showProviderResult({ok: true, message: 'Testing connection...'});
       render(await api('/api/test-provider', providerPayload()));
+    };
+    $('validateProject').onclick = async () => {
+      const button = $('validateProject');
+      button.disabled = true;
+      button.textContent = '验证中...';
+      renderProjectValidation({ok: true, summary: '正在验证当前项目...', checks: [], recommendations: []});
+      try {
+        render(await api('/api/project/validate', {}));
+      } finally {
+        button.disabled = false;
+        button.textContent = '验证项目';
+      }
     };
     api('/api/state').then(render);
   </script>

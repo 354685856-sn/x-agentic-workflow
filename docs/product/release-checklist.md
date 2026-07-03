@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-03
 
-## v0.6.0 release target
+## v0.7.0 release target
 
 - Package: `x-agentic-workflow`
 - CLI commands:
@@ -24,6 +24,9 @@ Last updated: 2026-07-03
 - Provider Settings target: the desktop UI can save provider metadata, test
   connectivity, avoid storing secret values, and redact secret-looking provider
   errors before displaying them.
+- Project Validation target: the desktop UI can run a read-only current-project
+  validation and report key files, git state, and recommended verification
+  commands.
 - Distribution target: `scripts/build-macos-preview-dmg.sh` builds a preview
   DMG with a bundled clean-room source snapshot for customer testing.
 
@@ -120,3 +123,12 @@ copying implementation details.
   storage remains future keychain work.
 - [x] Connectivity check.
 - [x] Redacted provider trace for connection-test errors.
+
+### v0.7 Project validation
+
+- [x] Current-project validation button in desktop UI.
+- [x] Read-only project path/key-file/git-state checks.
+- [x] Recommended verification commands based on project markers.
+- [ ] Project selector and workdir switching.
+- [ ] Per-project session list.
+- [ ] File-change ledger and diff workspace.

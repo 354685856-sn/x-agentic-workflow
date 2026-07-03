@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from x_agentic_workflow.config import RuntimeConfig
-from x_agentic_workflow.desktop import DesktopApp, _create_server, render_desktop_html
+from x_agentic_workflow.desktop import (
+    DesktopApp,
+    _create_server,
+    _validate_project,
+    render_desktop_html,
+)
 from x_agentic_workflow.types import Message, ModelResponse, ToolSpec
 
 
@@ -17,6 +22,7 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "Codex" in html
     assert "354685856-sn/x-agentic-workflow" in html
     assert "我的仓库位置" not in html
+    assert "Claude-cc-haha" not in html
     assert "Obsidian Vault" in html
     assert "inspector-card" in html
     assert "inspectorToggle" in html
@@ -28,6 +34,12 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "What’s up next, sn?" in html
     assert "Overview" in html
     assert "/api/ask" in html
+    assert "验证项目" in html
+    assert "验证中..." in html
+    assert "button.disabled = true" in html
+    assert "button.disabled = false" in html
+    assert "/api/project/validate" in html
+    assert "项目验证" in html
     assert "服务商" in html
     assert "DeepSeek" in html
     assert "MCP" in html
@@ -154,6 +166,41 @@ def test_desktop_provider_connection_validates_payload(tmp_path: Path) -> None:
     assert "Unsupported provider" in unsupported["providerTest"]["message"]
     assert missing_model["providerTest"]["message"] == "Model is required."
     assert missing_env["providerTest"]["message"] == "API key environment variable is required."
+
+
+def test_desktop_project_validation_reports_key_files_and_commands(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("# Rules\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+
+    result = _validate_project(tmp_path)
+
+    assert result["ok"] is True
+    assert result["path"] == str(tmp_path)
+    assert "AGENTS.md" in result["files"]
+    assert "README.md" in result["files"]
+    assert "pyproject.toml" in result["files"]
+    assert any("pytest" in command for command in result["recommendations"])
+    assert any(check["name"] == "Git" for check in result["checks"])
+
+
+def test_desktop_validate_project_api_updates_state(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.validate_project()
+
+    assert state["projectValidation"] is not None
+    assert state["projectValidation"]["path"] == str(tmp_path)
+    assert "README.md" in state["projectValidation"]["files"]
 
 
 def test_desktop_server_falls_back_when_preferred_port_is_busy() -> None:
