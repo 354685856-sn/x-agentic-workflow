@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-03
 
-## v0.13.0 release target
+## v0.14.0 release target
 
 - Package: `x-agentic-workflow`
 - CLI commands:
@@ -47,6 +47,9 @@ Last updated: 2026-07-03
 - Desktop Text Attachments target: the composer `+` selects bounded local text
   files, shows removable attachment chips, and submits validated file context
   without exposing attachment bodies when sessions are restored.
+- Provider Status UX target: settings reflects the actually saved provider,
+  preserves unsaved form drafts across UI state refreshes, and blocks duplicate
+  save/test submissions.
 - Distribution target: `scripts/build-macos-preview-dmg.sh` builds a preview
   DMG with a bundled clean-room source snapshot for customer testing.
 
@@ -202,3 +205,12 @@ copying implementation details.
 - [x] Revalidate names/content/limits on the server.
 - [x] Cancel stale asynchronous file reads after send/session/project changes.
 - [x] Restore session UI with attachment names but without raw attachment bodies.
+
+### v0.14 Provider status UX
+
+- [x] Render the actually saved provider/model/base URL/API key environment name.
+- [x] Show saved, missing-key, and unsaved-draft status.
+- [x] Preserve unsaved provider draft values across chat/settings transitions.
+- [x] Disable save/test buttons while a provider request is active.
+- [x] Guard duplicate save/test submissions.
+- [x] Remove fake add-provider button and hardcoded provider sample cards.

@@ -75,7 +75,13 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "/api/project/validate" in html
     assert "项目验证" in html
     assert "服务商" in html
-    assert "DeepSeek" in html
+    assert "savedProviderCard" in html
+    assert "savedProviderMeta" in html
+    assert "providerSaveStatus" in html
+    assert "providerFormDirty" in html
+    assert "providerSubmitting" in html
+    assert "runProviderAction" in html
+    assert "添加服务商" not in html
     assert "Token 用量" not in html
 
 
