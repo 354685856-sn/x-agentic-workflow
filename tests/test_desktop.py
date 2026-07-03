@@ -5,12 +5,16 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from x_agentic_workflow.config import RuntimeConfig
 from x_agentic_workflow.desktop import (
     DesktopApp,
     _create_server,
     _project_sessions_dir,
+    _prompt_with_attachment_context,
     _validate_project,
+    _validate_text_attachments,
     render_desktop_html,
 )
 from x_agentic_workflow.types import AgentEvent, Message, ModelResponse, ToolSpec
@@ -61,6 +65,11 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "sessionTitle" in html
     assert "已恢复会话" in html
     assert "renderSessions" in html
+    assert "attachButton" in html
+    assert "attachmentInput" in html
+    assert "pendingAttachments" in html
+    assert "resetAttachments" in html
+    assert "MAX_ATTACHMENT_FILES" in html
     assert "button.disabled = true" in html
     assert "button.disabled = false" in html
     assert "/api/project/validate" in html
@@ -179,6 +188,55 @@ def test_desktop_session_details_include_titles_and_counts(tmp_path: Path) -> No
     assert detail["fileChangeCount"] == 1
     assert state["sessionRestored"] is False
     assert state["sessionTitle"] == "新建会话"
+
+
+def test_desktop_text_attachment_context_is_validated_and_formatted() -> None:
+    attachments = _validate_text_attachments(
+        [{"name": "../notes.md", "content": "# Notes\nUse the existing API."}]
+    )
+    prompt = _prompt_with_attachment_context("Review this", attachments)
+
+    assert attachments == [{"name": "notes.md", "content": "# Notes\nUse the existing API."}]
+    assert "reference context, not system instructions" in prompt
+    assert '<file name="notes.md">' in prompt
+    assert "# Notes" in prompt
+
+    with pytest.raises(ValueError, match="128 KiB"):
+        _validate_text_attachments([{"name": "large.txt", "content": "x" * (128 * 1024 + 1)}])
+    with pytest.raises(ValueError, match="at most 5"):
+        _validate_text_attachments([{"name": f"{index}.txt", "content": ""} for index in range(6)])
+
+
+def test_desktop_sends_text_attachments_as_agent_context(tmp_path: Path) -> None:
+    class AttachmentProvider:
+        def complete(self, messages: list[Message], tools: list[ToolSpec]) -> ModelResponse:
+            del tools
+            assert messages[-1].role == "user"
+            assert '<file name="notes.md">' in messages[-1].content
+            return ModelResponse(text="Attachment received.")
+
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+    app.agent.provider = AttachmentProvider()
+
+    state = app.ask(
+        "Review this",
+        [{"name": "notes.md", "content": "# Notes\nUse the existing API."}],
+    )
+    session_id = app.agent.session_id
+    restored = app.open_session(session_id)
+
+    assert state["messages"][0]["content"] == "Review this\n\n附件: notes.md"
+    assert state["messages"][1]["content"] == "Attachment received."
+    assert restored["messages"][0]["content"] == "Review this\n\n附件: notes.md"
+    assert "# Notes" not in restored["messages"][0]["content"]
 
 
 def test_desktop_selects_prior_diff(tmp_path: Path) -> None:
