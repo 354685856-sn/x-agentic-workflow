@@ -73,7 +73,7 @@ After building the DMG:
 Or pass an explicit DMG path:
 
 ```bash
-./scripts/smoke-macos-preview-dmg.sh dist/X-Agentic-Workflow-0.5.0-macos-preview.dmg
+./scripts/smoke-macos-preview-dmg.sh dist/X-Agentic-Workflow-0.6.0-macos-preview.dmg
 ```
 
 The smoke test mounts the DMG, verifies the app bundle, opens the app, waits for

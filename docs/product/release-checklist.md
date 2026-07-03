@@ -1,8 +1,8 @@
 # x-agentic-workflow release checklist
 
-Last updated: 2026-07-01
+Last updated: 2026-07-03
 
-## v0.5.1 release target
+## v0.6.0 release target
 
 - Package: `x-agentic-workflow`
 - CLI commands:
@@ -21,6 +21,9 @@ Last updated: 2026-07-01
 - Desktop target: `xaw desktop` launches a clean-room local browser UI, and
   `apps/macos/X Agentic Workflow.app` provides a GitHub-download developer
   preview double-click launcher for macOS.
+- Provider Settings target: the desktop UI can save provider metadata, test
+  connectivity, avoid storing secret values, and redact secret-looking provider
+  errors before displaying them.
 - Distribution target: `scripts/build-macos-preview-dmg.sh` builds a preview
   DMG with a bundled clean-room source snapshot for customer testing.
 
@@ -34,7 +37,7 @@ Last updated: 2026-07-01
 .venv/bin/xaw desktop --help
 .venv/bin/xaw smoke-openai-compatible --allow-skip
 .venv/bin/python -m build
-.venv/bin/python -m twine check dist/*
+.venv/bin/python -m twine check dist/x_agentic_workflow-*
 ```
 
 ## Desktop delivery checks
@@ -92,3 +95,28 @@ TWINE_USERNAME=__token__ .venv/bin/python -m twine upload dist/*
 
 Enter the PyPI API token only at the terminal prompt. Do not paste tokens into
 chat, screenshots, docs, or shell history.
+
+## Release-note discipline
+
+Before tagging a version, create:
+
+- `release-notes/vX.Y.Z.md` with highlights, fixes, testing, confidence, and
+  scope risk.
+- `artifacts/quality-runs/<timestamp>/report.md` with exact validation commands
+  and outcomes.
+- A release commit message that includes `Tested:`, `Confidence:`, and
+  `Scope-risk:` lines.
+
+This mirrors the public release evidence pattern observed in `cc-haha` without
+copying implementation details.
+
+## Implementation milestones
+
+### v0.6 Provider settings
+
+- [x] Settings panel in clean-room UI.
+- [x] Save provider metadata.
+- [x] API key secure entry plan: config stores env var names only; secret-value
+  storage remains future keychain work.
+- [x] Connectivity check.
+- [x] Redacted provider trace for connection-test errors.
