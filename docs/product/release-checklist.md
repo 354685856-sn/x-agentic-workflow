@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-03
 
-## v0.12.0 release target
+## v0.13.0 release target
 
 - Package: `x-agentic-workflow`
 - CLI commands:
@@ -44,6 +44,9 @@ Last updated: 2026-07-03
 - Desktop Session Recovery target: desktop shows restorable session summaries,
   can filter local sessions by title/id, and clearly indicates when a session
   has been restored.
+- Desktop Text Attachments target: the composer `+` selects bounded local text
+  files, shows removable attachment chips, and submits validated file context
+  without exposing attachment bodies when sessions are restored.
 - Distribution target: `scripts/build-macos-preview-dmg.sh` builds a preview
   DMG with a bundled clean-room source snapshot for customer testing.
 
@@ -190,3 +193,12 @@ copying implementation details.
 - [x] Expose session summaries with updated time, message count, and file-change count.
 - [x] Render searchable local session list in the sidebar.
 - [x] Show restored-session title and visible restore pill after opening a session.
+
+### v0.13 Safe text attachments
+
+- [x] Composer `+` opens a text-file picker.
+- [x] Render removable attachment chips before sending.
+- [x] Enforce five-file, 128 KiB per-file, and 256 KiB total limits.
+- [x] Revalidate names/content/limits on the server.
+- [x] Cancel stale asynchronous file reads after send/session/project changes.
+- [x] Restore session UI with attachment names but without raw attachment bodies.
