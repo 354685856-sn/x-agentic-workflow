@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-03
 
-## v0.11.0 release target
+## v0.11.1 release target
 
 - Package: `x-agentic-workflow`
 - CLI commands:
@@ -38,6 +38,9 @@ Last updated: 2026-07-03
   the active session JSON and restores it when that session is opened.
 - Multi-file Diff target: desktop can select a prior file change and render its
   diff instead of only showing the newest diff.
+- Desktop UI Alignment target: desktop home screen uses a focused empty-session
+  layout, settings uses the provider-management layout, and unimplemented
+  sidebar/settings entries are not shown as fake navigation.
 - Distribution target: `scripts/build-macos-preview-dmg.sh` builds a preview
   DMG with a bundled clean-room source snapshot for customer testing.
 
@@ -170,3 +173,10 @@ copying implementation details.
 - [x] Restore file-change ledger when opening an existing desktop session.
 - [x] Select any visible file-change entry and render its diff.
 - [x] Keep old session JSON without `file_changes` load-compatible.
+
+### v0.11.1 Desktop UI alignment
+
+- [x] Remove dashboard-style home stats and heatmap.
+- [x] Align home to a focused empty-session screen with bottom composer.
+- [x] Align settings to current provider-management capability.
+- [x] Remove unimplemented fake navigation entries from sidebar and settings.
