@@ -83,8 +83,11 @@ class DesktopApp:
         self.messages: list[dict[str, str]] = []
         self.project_validation: dict[str, Any] | None = None
         self.file_changes: list[dict[str, Any]] = []
+        self.selected_diff_index: int | None = None
 
     def state(self) -> dict[str, Any]:
+        visible_changes = self._visible_file_changes()
+        selected_diff = self._selected_diff()
         return {
             "provider": self.config.provider.name,
             "model": self.config.provider.model,
@@ -98,18 +101,23 @@ class DesktopApp:
             "messages": self.messages[-30:],
             "projectValidation": self.project_validation,
             "recentProjects": self._recent_project_entries(),
-            "fileChanges": self.file_changes[-12:],
-            "latestDiff": self.file_changes[-1] if self.file_changes else None,
+            "fileChanges": visible_changes,
+            "selectedDiff": selected_diff,
+            "selectedDiffIndex": self.selected_diff_index,
+            "latestDiff": selected_diff,
         }
 
     def new_chat(self) -> dict[str, Any]:
         self.agent = self._new_agent()
         self.messages = []
         self.file_changes = []
+        self.selected_diff_index = None
         return self.state()
 
     def open_session(self, session_id: str) -> dict[str, Any]:
         self.agent = self._new_agent(session_id=session_id)
+        self.file_changes = self._load_file_changes(session_id)
+        self.selected_diff_index = len(self.file_changes) - 1 if self.file_changes else None
         self.messages = [
             {"role": message.role, "content": message.content}
             for message in self.agent.messages
@@ -227,6 +235,22 @@ class DesktopApp:
         self.project_validation = _validate_project(self.config.workdir)
         return self.state()
 
+    def select_diff(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            index = int(payload.get("index", -1))
+        except (TypeError, ValueError):
+            index = -1
+        if index < 0 or index >= len(self.file_changes):
+            return {
+                **self.state(),
+                "diffSelect": {"ok": False, "message": f"Diff index is out of range: {index}"},
+            }
+        self.selected_diff_index = index
+        return {
+            **self.state(),
+            "diffSelect": {"ok": True, "message": f"Selected diff for {self.file_changes[index]['path']}."},
+        }
+
     def switch_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_path = str(payload.get("path", "")).strip()
         if not raw_path:
@@ -254,6 +278,7 @@ class DesktopApp:
         self.agent = self._new_agent()
         self.messages = []
         self.file_changes = []
+        self.selected_diff_index = None
         self.project_validation = _validate_project(target)
         return {
             **self.state(),
@@ -312,6 +337,38 @@ class DesktopApp:
             }
         )
         self.file_changes = self.file_changes[-50:]
+        self.selected_diff_index = len(self.file_changes) - 1
+        self.sessions.save_file_changes(self.agent.session_id, self.file_changes)
+
+    def _load_file_changes(self, session_id: str) -> list[dict[str, Any]]:
+        changes: list[dict[str, Any]] = []
+        for raw in self.sessions.load_file_changes(session_id):
+            path = str(raw.get("path", ""))
+            if not path:
+                continue
+            changes.append(
+                {
+                    "path": path,
+                    "ok": bool(raw.get("ok", False)),
+                    "existed": bool(raw.get("existed", False)),
+                    "summary": str(raw.get("summary", "")),
+                    "diff": str(raw.get("diff", "")),
+                }
+            )
+        return changes[-50:]
+
+    def _visible_file_changes(self) -> list[dict[str, Any]]:
+        start = max(len(self.file_changes) - 12, 0)
+        return [{**change, "index": start + offset} for offset, change in enumerate(self.file_changes[start:])]
+
+    def _selected_diff(self) -> dict[str, Any] | None:
+        if not self.file_changes:
+            return None
+        index = self.selected_diff_index
+        if index is None or index < 0 or index >= len(self.file_changes):
+            index = len(self.file_changes) - 1
+            self.selected_diff_index = index
+        return {**self.file_changes[index], "index": index}
 
 
 def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
@@ -344,6 +401,9 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/api/project/validate":
                 self._send_json(app.validate_project())
+                return
+            if self.path == "/api/diff/select":
+                self._send_json(app.select_diff(payload))
                 return
             if self.path == "/api/project/switch":
                 self._send_json(app.switch_project(payload))
@@ -791,6 +851,11 @@ def render_desktop_html() -> str:
       display: flex; align-items: center; gap: 10px; min-height: 34px; color: #30343a;
       font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    button.file-row {
+      width: 100%; border: 0; border-radius: 8px; background: transparent; padding: 0 8px;
+      font: inherit; cursor: pointer; text-align: left;
+    }
+    button.file-row:hover, button.file-row.active { background: #f3f3f1; }
     .file-row span:last-child, .task-row span:last-child { overflow: hidden; text-overflow: ellipsis; }
     .more-link { color: #999; font-size: 14px; margin-top: 6px; }
     .diff-view {
@@ -1113,11 +1178,12 @@ def render_desktop_html() -> str:
         renderProjectValidation({ok: false, summary: state.projectSwitch.message, checks: [], recommendations: []});
       }
       renderRecentProjects(state.recentProjects || []);
-      renderFileChanges(state.fileChanges || [], state.latestDiff);
+      renderFileChanges(state.fileChanges || [], state.selectedDiff || state.latestDiff, state.selectedDiffIndex);
       $('recents').innerHTML = state.sessions.map((s, i) => `<div class="conversation-row" data-session="${s}"><span class="conversation-title">${s}</span><span class="shortcut">⌘${i + 1}</span></div>`).join('') || '<div class="conversation-row muted"><span class="conversation-title">暂无聊天</span></div>';
       $('messages').innerHTML = state.messages.map(m => `<div class="msg ${m.role}">${escapeHtml(m.content)}</div>`).join('');
       document.querySelectorAll('[data-session]').forEach(btn => btn.onclick = async () => render(await api('/api/open', {sessionId: btn.dataset.session})));
       document.querySelectorAll('[data-project-path]').forEach(btn => btn.onclick = async () => switchProject(btn.dataset.projectPath));
+      document.querySelectorAll('[data-diff-index]').forEach(btn => btn.onclick = async () => render(await api('/api/diff/select', {index: btn.dataset.diffIndex})));
     }
     function providerPayload() {
       return {
@@ -1156,7 +1222,7 @@ def render_desktop_html() -> str:
         return `<div class="conversation-row${active}"><button data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}">${escapeHtml(project.name)}</button><span class="shortcut">${badge}</span></div>`;
       }).join('');
     }
-    function renderFileChanges(changes, latest) {
+    function renderFileChanges(changes, latest, selectedIndex) {
       const box = $('fileChanges');
       if (!changes.length) {
         box.innerHTML = '<div class="empty-note">暂无文件变更。</div>';
@@ -1164,7 +1230,8 @@ def render_desktop_html() -> str:
         box.innerHTML = changes.slice().reverse().map(change => {
           const marker = change.ok ? '▣' : '!';
           const state = change.existed ? 'updated' : 'created';
-          return `<div class="file-row"><span>${marker}</span><span title="${escapeHtml(change.summary)}">${escapeHtml(change.path)} · ${state}</span></div>`;
+          const selected = change.index === selectedIndex ? ' active' : '';
+          return `<button class="file-row${selected}" data-diff-index="${change.index}"><span>${marker}</span><span title="${escapeHtml(change.summary)}">${escapeHtml(change.path)} · ${state}</span></button>`;
         }).join('');
       }
       $('latestDiff').textContent = latest && latest.diff ? latest.diff : '暂无 diff。';
