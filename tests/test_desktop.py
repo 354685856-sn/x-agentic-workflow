@@ -19,11 +19,11 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
 
     assert "x-agentic-workflow" in html
     assert "新对话" in html
-    assert "Codex" in html
     assert "354685856-sn/x-agentic-workflow" in html
+    assert "当前" in html
     assert "我的仓库位置" not in html
     assert "Claude-cc-haha" not in html
-    assert "Obsidian Vault" in html
+    assert "最近项目" in html
     assert "inspector-card" in html
     assert "inspectorToggle" in html
     assert "inspector-collapsed" in html
@@ -36,6 +36,11 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "/api/ask" in html
     assert "验证项目" in html
     assert "验证中..." in html
+    assert "切换项目" in html
+    assert "切换中..." in html
+    assert "/api/project/switch" in html
+    assert "projectPathInput" in html
+    assert "recentProjects" in html
     assert "button.disabled = true" in html
     assert "button.disabled = false" in html
     assert "/api/project/validate" in html
@@ -201,6 +206,51 @@ def test_desktop_validate_project_api_updates_state(tmp_path: Path) -> None:
     assert state["projectValidation"] is not None
     assert state["projectValidation"]["path"] == str(tmp_path)
     assert "README.md" in state["projectValidation"]["files"]
+
+
+def test_desktop_switch_project_updates_workdir_and_recent_projects(tmp_path: Path) -> None:
+    start = tmp_path / "start"
+    target = tmp_path / "target"
+    start.mkdir()
+    target.mkdir()
+    (target / "README.md").write_text("# Target\n", encoding="utf-8")
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=start,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.switch_project({"path": str(target)})
+
+    assert state["projectSwitch"]["ok"] is True
+    assert state["workdir"] == str(target)
+    assert state["projectValidation"]["path"] == str(target)
+    assert state["recentProjects"][0]["path"] == str(target)
+    assert state["recentProjects"][0]["active"] is True
+    saved = (tmp_path / "config.json").read_text(encoding="utf-8")
+    assert str(target) in saved
+
+
+def test_desktop_switch_project_rejects_invalid_path(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.switch_project({"path": str(tmp_path / "missing")})
+
+    assert state["projectSwitch"]["ok"] is False
+    assert state["workdir"] == str(tmp_path)
+    assert not (tmp_path / "config.json").exists()
 
 
 def test_desktop_server_falls_back_when_preferred_port_is_busy() -> None:
