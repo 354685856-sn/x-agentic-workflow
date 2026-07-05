@@ -16,20 +16,20 @@ dist/X-Agentic-Workflow-<version>-macos-preview.dmg
 
 The DMG contains:
 
-- `X Agentic Workflow.app`
+- `Cat Agentic.app`
 - `Applications` shortcut
 - `README-macOS-preview.md`
 
 The app bundle includes a source snapshot under:
 
 ```text
-X Agentic Workflow.app/Contents/Resources/source
+Cat Agentic.app/Contents/Resources/source
 ```
 
 On first launch, the app copies that bundled source into:
 
 ```text
-~/Library/Application Support/x-agentic-workflow/source
+~/Library/Application Support/cat-agentic/source
 ```
 
 Then it creates a local `.venv`, installs the local package, starts
@@ -59,7 +59,7 @@ distribution, the next steps are:
 Runtime logs:
 
 ```text
-~/Library/Logs/x-agentic-workflow/desktop-app.log
+~/Library/Logs/cat-agentic/desktop-app.log
 ```
 
 ## Smoke test
@@ -84,13 +84,13 @@ the local desktop URL, checks `/api/state`, and detaches the DMG.
 For a preview build:
 
 ```bash
-./scripts/check-macos-signing.sh "apps/macos/X Agentic Workflow.app"
+./scripts/check-macos-signing.sh "apps/macos/Cat Agentic.app"
 ```
 
 For a mounted or copied customer app:
 
 ```bash
-./scripts/check-macos-signing.sh "/Applications/X Agentic Workflow.app"
+./scripts/check-macos-signing.sh "/Applications/Cat Agentic.app"
 ```
 
 Production customer builds should show:

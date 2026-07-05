@@ -1,11 +1,11 @@
-# x-agentic-workflow
+# cat-agentic
 
 Clean-room Python terminal agentic coding assistant.
 
 This repo contains two layers:
 
 - the SAFe Agentic Workflow harness for developing the product;
-- the `x-agentic-workflow` runtime in `src/x_agentic_workflow`.
+- the `cat-agentic` runtime in the compatibility module `src/x_agentic_workflow`.
 
 The runtime targets the same category as Codex CLI, Gemini CLI, aider, Cline,
 and Claude-style coding assistants, while using original Python code.
@@ -13,11 +13,12 @@ and Claude-style coding assistants, while using original Python code.
 ## Current capability
 
 - Hybrid terminal UI:
-  - `xaw chat` interactive shell UI
-  - `xaw run -p "..."` headless one-shot mode
-  - `xaw tui` Textual full-screen hybrid terminal UI
-  - `xaw desktop` clean-room local browser desktop UI
-  - `apps/macos/X Agentic Workflow.app` double-click macOS launcher
+  - `cat-agentic chat` interactive shell UI
+  - `cat-agentic run -p "..."` headless one-shot mode
+  - `cat-agentic tui` Textual full-screen hybrid terminal UI
+  - `cat-agentic desktop` clean-room local browser desktop UI
+  - `xaw` remains available as a compatibility command
+  - `apps/macos/Cat Agentic.app` double-click macOS launcher
 - BYOK model providers:
   - Anthropic Messages API
   - OpenAI-compatible Chat Completions API
@@ -55,30 +56,23 @@ and Claude-style coding assistants, while using original Python code.
 
 ## Install for development
 
-Install from TestPyPI during release validation:
-
-```bash
-python3 -m venv /tmp/xaw-testpypi
-/tmp/xaw-testpypi/bin/python -m pip install \
-  --index-url https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple \
-  x-agentic-workflow
-/tmp/xaw-testpypi/bin/xaw --version
-```
-
-After the production PyPI release:
-
-```bash
-pipx install x-agentic-workflow
-```
-
-For local development:
+The rename has not been published yet. For the current development branch:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
+cat-agentic --version
 ```
+
+After a future production release under the new package name:
+
+```bash
+pipx install cat-agentic
+```
+
+Published versions through `0.16.0` remain under the historical
+`x-agentic-workflow` package and repository name.
 
 ## Configure
 
@@ -88,14 +82,14 @@ Anthropic:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-xaw init --provider anthropic --model claude-3-5-sonnet-latest
+cat-agentic init --provider anthropic --model claude-3-5-sonnet-latest
 ```
 
 OpenAI-compatible:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-xaw init \
+cat-agentic init \
   --provider openai-compatible \
   --base-url https://api.openai.com/v1 \
   --model gpt-4.1
@@ -107,14 +101,14 @@ use its OpenAI-compatible base URL and model name.
 ## Run
 
 ```bash
-xaw doctor
-xaw chat
-xaw tui
-xaw desktop
-xaw run -p "list this project and explain what it does"
+cat-agentic doctor
+cat-agentic chat
+cat-agentic tui
+cat-agentic desktop
+cat-agentic run -p "list this project and explain what it does"
 ```
 
-`xaw tui` opens a multi-panel terminal app:
+`cat-agentic tui` opens a multi-panel terminal app:
 
 - left rail: workspace, provider, model, sessions, Skills, Hooks, MCP status
 - center: transcript and prompt composer
@@ -131,8 +125,8 @@ Timeline panel so a run is easier to audit.
 Resume a session:
 
 ```bash
-xaw sessions
-xaw chat --session 20260630-120000
+cat-agentic sessions
+cat-agentic chat --session 20260630-120000
 ```
 
 ## macOS double-click app
@@ -140,11 +134,11 @@ xaw chat --session 20260630-120000
 For GitHub download / developer-preview use, this repo includes:
 
 ```text
-apps/macos/X Agentic Workflow.app
+apps/macos/Cat Agentic.app
 ```
 
 On macOS, double-clicking that app bundle prepares `.venv`, installs the local
-package, starts `xaw desktop`, and opens the clean-room browser UI.
+package, starts the desktop command, and opens the clean-room browser UI.
 
 Details and customer notes:
 [docs/product/macos-app.md](docs/product/macos-app.md)
@@ -182,12 +176,13 @@ implementation structure, private prompts, private constants, or UI text.
 python -m pytest
 python -m ruff check .
 python -m mypy src/x_agentic_workflow
-xaw smoke-openai-compatible --allow-skip
+cat-agentic smoke-openai-compatible --allow-skip
 ```
 
 ## Release status
 
-Current local release target: `0.16.0`, focused on stable desktop session timestamps.
+Current local release target: `0.17.0`, introducing the `cat-agentic` brand,
+desktop UI alignment, local scheduling, Git workspace status, and Worktree controls.
 
 Version `0.15.0` is published on GitHub with scoped composer draft recovery:
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET="${1:-apps/macos/X Agentic Workflow.app}"
+TARGET="${1:-apps/macos/Cat Agentic.app}"
 
 if [[ ! -e "$TARGET" ]]; then
   echo "Target not found: $TARGET" >&2

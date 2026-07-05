@@ -1,12 +1,24 @@
 from pathlib import Path
 
+import tomllib
+
+
+def test_package_brand_and_compatibility_commands() -> None:
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+
+    assert project["name"] == "cat-agentic"
+    assert project["scripts"]["cat-agentic"] == "x_agentic_workflow.cli:app"
+    assert project["scripts"]["xaw"] == "x_agentic_workflow.cli:app"
+    assert project["scripts"]["x-agentic-workflow"] == "x_agentic_workflow.cli:app"
+
 
 def test_macos_preview_dmg_script_is_present_and_scoped() -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts/build-macos-preview-dmg.sh"
     smoke_script = root / "scripts/smoke-macos-preview-dmg.sh"
     signing_script = root / "scripts/check-macos-signing.sh"
-    launcher = root / "packaging/macos/x-agentic-workflow-distribution-launcher.zsh"
+    launcher = root / "packaging/macos/cat-agentic-distribution-launcher.zsh"
 
     assert script.is_file()
     assert smoke_script.is_file()
@@ -28,8 +40,8 @@ def test_macos_preview_dmg_script_is_present_and_scoped() -> None:
     assert "hdiutil attach" in smoke_text
     assert "/api/state" in smoke_text
     assert "Notarization Ticket=stapled" in signing_text
-    assert "Application Support/x-agentic-workflow" in launcher_text
-    assert "xaw desktop --host 127.0.0.1 --port 8765" in launcher_text
+    assert "Application Support/cat-agentic" in launcher_text
+    assert "cat-agentic desktop --host 127.0.0.1 --port 8765" in launcher_text
 
 
 def test_legal_reference_map_preserves_clean_room_boundary() -> None:

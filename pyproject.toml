@@ -3,8 +3,8 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "x-agentic-workflow"
-version = "0.16.0"
+name = "cat-agentic"
+version = "0.17.0"
 description = "A clean-room terminal agentic coding assistant with BYOK model providers, sandboxed tools, sessions, skills, hooks, MCP, and multi-agent extension points."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -43,6 +43,7 @@ dev = [
 ]
 
 [project.scripts]
+cat-agentic = "x_agentic_workflow.cli:app"
 xaw = "x_agentic_workflow.cli:app"
 x-agentic-workflow = "x_agentic_workflow.cli:app"
 

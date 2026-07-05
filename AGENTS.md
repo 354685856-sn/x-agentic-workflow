@@ -2,7 +2,7 @@
 
 ## Project-local product rules
 
-This repository now contains the `x-agentic-workflow` Python product runtime in
+This repository now contains the `cat-agentic` Python product runtime in
 `src/x_agentic_workflow` alongside the SAFe harness files.
 
 Primary product goal: a clean-room terminal agentic coding assistant with hybrid
@@ -21,7 +21,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 .venv/bin/python -m ruff check src tests
 .venv/bin/python -m mypy src/x_agentic_workflow
-.venv/bin/xaw doctor
+.venv/bin/cat-agentic doctor
 ```
 
 Secrets rule: never commit API keys. Runtime config stores provider metadata

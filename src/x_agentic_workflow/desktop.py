@@ -1,4 +1,4 @@
-"""Clean-room local browser UI for x-agentic-workflow."""
+"""Clean-room local browser UI for cat-agentic."""
 # ruff: noqa: E501
 
 import errno
@@ -10,6 +10,7 @@ import socket
 import subprocess
 import threading
 import webbrowser
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +29,7 @@ SECRET_PATTERN = re.compile(
 MAX_ATTACHMENT_FILES = 5
 MAX_ATTACHMENT_BYTES = 128 * 1024
 MAX_ATTACHMENT_TOTAL_BYTES = 256 * 1024
+SCHEDULER_INTERVAL_SECONDS = 30
 
 
 def run_desktop(
@@ -40,16 +42,18 @@ def run_desktop(
 
     runtime_config = config or RuntimeConfig.load(workdir=Path.cwd())
     app = DesktopApp(runtime_config)
+    app.start_scheduler()
     server = _create_server(host, port, _handler_for(app))
     url = f"http://{host}:{server.server_port}"
     if open_browser:
         threading.Timer(0.2, lambda: webbrowser.open(url)).start()
-    print(f"x-agentic-workflow desktop UI running at {url}", flush=True)  # noqa: T201
+    print(f"cat-agentic desktop UI running at {url}", flush=True)  # noqa: T201
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        app.stop_scheduler()
         server.server_close()
 
 
@@ -88,6 +92,10 @@ class DesktopApp:
         self.file_changes: list[dict[str, Any]] = []
         self.selected_diff_index: int | None = None
         self.session_restored = False
+        self.scheduled_tasks_file = self.config.config_file.parent / "scheduled-tasks.json"
+        self._scheduler_stop = threading.Event()
+        self._scheduler_thread: threading.Thread | None = None
+        self._scheduled_lock = threading.RLock()
 
     def state(self) -> dict[str, Any]:
         visible_changes = self._visible_file_changes()
@@ -114,6 +122,9 @@ class DesktopApp:
             "selectedDiff": selected_diff,
             "selectedDiffIndex": self.selected_diff_index,
             "latestDiff": selected_diff,
+            "scheduledTasks": self._load_scheduled_tasks(),
+            "scheduledSummary": self._scheduled_summary(),
+            "workspaceStatus": _workspace_status(self.config.workdir),
         }
 
     def new_chat(self) -> dict[str, Any]:
@@ -276,6 +287,151 @@ class DesktopApp:
             "diffSelect": {"ok": True, "message": f"Selected diff for {self.file_changes[index]['path']}."},
         }
 
+    def create_scheduled_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        title = str(payload.get("title", "")).strip()
+        prompt = str(payload.get("prompt", "")).strip()
+        schedule = str(payload.get("schedule", "")).strip()
+        if not title:
+            return {
+                **self.state(),
+                "scheduledResult": {"ok": False, "message": "任务名称不能为空。"},
+            }
+        if not prompt:
+            return {
+                **self.state(),
+                "scheduledResult": {"ok": False, "message": "任务提示词不能为空。"},
+            }
+        if not schedule:
+            return {
+                **self.state(),
+                "scheduledResult": {"ok": False, "message": "执行时间不能为空。"},
+            }
+
+        tasks = self._load_scheduled_tasks()
+        now = datetime.now(timezone.utc).isoformat()
+        next_run_at = _next_scheduled_run(schedule, datetime.now(timezone.utc))
+        if next_run_at is None:
+            return {
+                **self.state(),
+                "scheduledResult": {
+                    "ok": False,
+                    "message": "暂不支持这个时间格式。请使用“每天 09:00”或“每 30 分钟”。",
+                },
+            }
+        task_id = hashlib.sha256(f"{now}:{self.config.workdir}:{title}:{prompt}".encode()).hexdigest()[:12]
+        tasks.insert(
+            0,
+            {
+                "id": task_id,
+                "title": title[:120],
+                "prompt": prompt[:4000],
+                "schedule": schedule[:120],
+                "projectPath": str(self.config.workdir),
+                "enabled": True,
+                "createdAt": now,
+                "lastRunAt": None,
+                "nextRunAt": next_run_at.isoformat(),
+                "status": "scheduled",
+                "runs": [],
+            },
+        )
+        self._save_scheduled_tasks(tasks[:50])
+        return {
+            **self.state(),
+            "scheduledResult": {"ok": True, "message": "定时任务已保存到本机调度器。"},
+        }
+
+    def delete_scheduled_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(payload.get("id", "")).strip()
+        tasks = self._load_scheduled_tasks()
+        next_tasks = [task for task in tasks if task["id"] != task_id]
+        if len(next_tasks) == len(tasks):
+            return {
+                **self.state(),
+                "scheduledResult": {"ok": False, "message": f"未找到定时任务：{task_id}"},
+            }
+        self._save_scheduled_tasks(next_tasks)
+        return {
+            **self.state(),
+            "scheduledResult": {"ok": True, "message": "定时任务已删除。"},
+        }
+
+    def start_scheduler(self, interval_seconds: float = SCHEDULER_INTERVAL_SECONDS) -> None:
+        if self._scheduler_thread is not None and self._scheduler_thread.is_alive():
+            return
+        self._scheduler_stop.clear()
+        self._scheduler_thread = threading.Thread(
+            target=self._scheduler_loop,
+            args=(interval_seconds,),
+            name="xaw-desktop-scheduler",
+            daemon=True,
+        )
+        self._scheduler_thread.start()
+
+    def stop_scheduler(self) -> None:
+        self._scheduler_stop.set()
+        if self._scheduler_thread is not None:
+            self._scheduler_thread.join(timeout=2)
+        self._scheduler_thread = None
+
+    def _scheduler_loop(self, interval_seconds: float) -> None:
+        while not self._scheduler_stop.is_set():
+            self._run_due_scheduled_tasks()
+            self._scheduler_stop.wait(interval_seconds)
+
+    def _run_due_scheduled_tasks(self, now: datetime | None = None) -> list[dict[str, Any]]:
+        current = now or datetime.now(timezone.utc)
+        executed: list[dict[str, Any]] = []
+        with self._scheduled_lock:
+            tasks = self._load_scheduled_tasks()
+            changed = False
+            for task in tasks:
+                if not task["enabled"]:
+                    continue
+                next_run_at = _parse_datetime(task.get("nextRunAt"))
+                if next_run_at is None or next_run_at > current:
+                    continue
+                executed.append(self._execute_scheduled_task(task, current))
+                changed = True
+            if changed:
+                self._save_scheduled_tasks(tasks)
+        return executed
+
+    def _execute_scheduled_task(self, task: dict[str, Any], now: datetime) -> dict[str, Any]:
+        run_at = now.isoformat()
+        result: dict[str, Any]
+        try:
+            agent = Agent(self.config)
+            answer = agent.run_once(str(task["prompt"]))
+            result = {
+                "ranAt": run_at,
+                "ok": True,
+                "summary": (answer or "完成").strip()[:500],
+                "sessionId": agent.session_id,
+            }
+            task["status"] = "last-ok"
+        except Exception as exc:  # noqa: BLE001 - scheduled failures are shown in run history
+            result = {
+                "ranAt": run_at,
+                "ok": False,
+                "summary": _redact_provider_error(str(exc), self.config.provider.api_key_env)[:500],
+                "sessionId": None,
+            }
+            task["status"] = "last-failed"
+        runs = task.get("runs", [])
+        if not isinstance(runs, list):
+            runs = []
+        task["runs"] = [result, *runs][:10]
+        task["lastRunAt"] = run_at
+        next_run_at = _next_scheduled_run(str(task["schedule"]), now)
+        if next_run_at is None:
+            task["enabled"] = False
+            task["nextRunAt"] = None
+            task["status"] = "invalid-schedule"
+        else:
+            task["nextRunAt"] = next_run_at.isoformat()
+        return result
+
     def switch_project(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_path = str(payload.get("path", "")).strip()
         if not raw_path:
@@ -311,6 +467,77 @@ class DesktopApp:
             "projectSwitch": {"ok": True, "message": f"Switched to {target}."},
         }
 
+    def create_worktree(self, payload: dict[str, Any]) -> dict[str, Any]:
+        branch = str(payload.get("branch", "")).strip()
+        raw_path = str(payload.get("path", "")).strip()
+        if not branch or not raw_path:
+            return {
+                **self.state(),
+                "worktreeCreate": {
+                    "ok": False,
+                    "message": "分支名和 Worktree 目录都不能为空。",
+                },
+            }
+        root = _git_output(self.config.workdir, "rev-parse", "--show-toplevel")
+        if root is None:
+            return {
+                **self.state(),
+                "worktreeCreate": {"ok": False, "message": "当前目录不是 Git 仓库。"},
+            }
+        if _git_output(self.config.workdir, "check-ref-format", "--branch", branch) is None:
+            return {
+                **self.state(),
+                "worktreeCreate": {"ok": False, "message": f"分支名不合法：{branch}"},
+            }
+        target = Path(raw_path).expanduser().resolve()
+        if target.exists():
+            return {
+                **self.state(),
+                "worktreeCreate": {
+                    "ok": False,
+                    "message": f"目标目录已经存在：{target}",
+                },
+            }
+        if not target.parent.exists() or not target.parent.is_dir():
+            return {
+                **self.state(),
+                "worktreeCreate": {
+                    "ok": False,
+                    "message": f"目标父目录不存在：{target.parent}",
+                },
+            }
+        try:
+            result = subprocess.run(
+                ["git", "-C", root, "worktree", "add", "-b", branch, str(target)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                **self.state(),
+                "worktreeCreate": {"ok": False, "message": f"创建 Worktree 失败：{exc}"},
+            }
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or "git worktree add failed"
+            return {
+                **self.state(),
+                "worktreeCreate": {
+                    "ok": False,
+                    "message": f"创建 Worktree 失败：{detail[:500]}",
+                },
+            }
+        return {
+            **self.state(),
+            "worktreeCreate": {
+                "ok": True,
+                "message": f"已创建 Worktree：{target}",
+                "path": str(target),
+                "branch": branch,
+            },
+        }
+
     def _remember_project(self, path: Path) -> None:
         target = str(path.resolve())
         seen: set[str] = set()
@@ -342,6 +569,58 @@ class DesktopApp:
 
     def _scope_sessions_to_project(self, workdir: Path) -> None:
         self.config.sessions_dir = _project_sessions_dir(self.base_sessions_dir, workdir)
+
+    def _load_scheduled_tasks(self) -> list[dict[str, Any]]:
+        with self._scheduled_lock:
+            if not self.scheduled_tasks_file.exists():
+                return []
+            try:
+                data = json.loads(self.scheduled_tasks_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return []
+            tasks: list[dict[str, Any]] = []
+            now = datetime.now(timezone.utc)
+            for raw in data if isinstance(data, list) else []:
+                if not isinstance(raw, dict):
+                    continue
+                task_id = str(raw.get("id", "")).strip()
+                title = str(raw.get("title", "")).strip()
+                prompt = str(raw.get("prompt", "")).strip()
+                schedule = str(raw.get("schedule", "")).strip()
+                if not task_id or not title or not prompt or not schedule:
+                    continue
+                runs = raw.get("runs", [])
+                next_run_at = raw.get("nextRunAt") or _next_scheduled_run(schedule, now)
+                tasks.append(
+                    {
+                        "id": task_id,
+                        "title": title,
+                        "prompt": prompt,
+                        "schedule": schedule,
+                        "projectPath": str(raw.get("projectPath", self.config.workdir)),
+                        "enabled": bool(raw.get("enabled", True)),
+                        "createdAt": str(raw.get("createdAt", "")),
+                        "lastRunAt": raw.get("lastRunAt") if raw.get("lastRunAt") else None,
+                        "nextRunAt": next_run_at.isoformat() if isinstance(next_run_at, datetime) else next_run_at,
+                        "status": str(raw.get("status", "scheduled")),
+                        "runs": runs[:10] if isinstance(runs, list) else [],
+                    }
+                )
+            return tasks[:50]
+
+    def _save_scheduled_tasks(self, tasks: list[dict[str, Any]]) -> None:
+        with self._scheduled_lock:
+            self.scheduled_tasks_file.parent.mkdir(parents=True, exist_ok=True)
+            self.scheduled_tasks_file.write_text(
+                json.dumps(tasks, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+    def _scheduled_summary(self) -> str:
+        count = len(self._load_scheduled_tasks())
+        if count == 0:
+            return "暂无定时任务。可以创建本地任务，桌面进程会按计划执行。"
+        return f"已保存 {count} 个本地定时任务，桌面进程运行时会自动检查执行。"
 
     def _new_agent(self, session_id: str | None = None) -> Agent:
         return Agent(self.config, session_id=session_id, event_sink=self._record_agent_event)
@@ -411,6 +690,15 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
             if self.path == "/api/state":
                 self._send_json(app.state())
                 return
+            if self.path == "/api/scheduled":
+                state = app.state()
+                self._send_json(
+                    {
+                        "scheduledTasks": state["scheduledTasks"],
+                        "scheduledSummary": state["scheduledSummary"],
+                    }
+                )
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
@@ -438,8 +726,17 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
             if self.path == "/api/diff/select":
                 self._send_json(app.select_diff(payload))
                 return
+            if self.path == "/api/scheduled/create":
+                self._send_json(app.create_scheduled_task(payload))
+                return
+            if self.path == "/api/scheduled/delete":
+                self._send_json(app.delete_scheduled_task(payload))
+                return
             if self.path == "/api/project/switch":
                 self._send_json(app.switch_project(payload))
+                return
+            if self.path == "/api/worktree/create":
+                self._send_json(app.create_worktree(payload))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -486,6 +783,45 @@ def _redact_secret_match(match: re.Match[str]) -> str:
         key, _, _value = text.partition("=")
         return f"{key}=[REDACTED]"
     return "[REDACTED]"
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _next_scheduled_run(schedule: str, after: datetime) -> datetime | None:
+    text = schedule.strip().lower()
+    if not text:
+        return None
+
+    interval_match = re.fullmatch(r"(?:每|every)\s*(\d+)\s*(?:分钟|minute|minutes|min|mins)", text)
+    if interval_match:
+        minutes = int(interval_match.group(1))
+        if minutes <= 0:
+            return None
+        return after + timedelta(minutes=minutes)
+
+    daily_match = re.fullmatch(r"(?:每天|每日|daily)\s*(\d{1,2}):(\d{2})", text)
+    if daily_match:
+        hour = int(daily_match.group(1))
+        minute = int(daily_match.group(2))
+        if hour > 23 or minute > 59:
+            return None
+        local_after = after.astimezone()
+        candidate = local_after.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= local_after:
+            candidate += timedelta(days=1)
+        return candidate
+
+    return None
 
 
 def _validate_text_attachments(value: Any) -> list[dict[str, str]]:
@@ -549,6 +885,96 @@ def _project_sessions_dir(base_dir: Path, workdir: Path) -> Path:
     digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", workdir.name).strip(".-") or "project"
     return base_dir / "projects" / f"{slug}-{digest}"
+
+
+def _workspace_status(workdir: Path) -> dict[str, Any]:
+    root = _git_output(workdir, "rev-parse", "--show-toplevel")
+    if root is None:
+        return {
+            "isGit": False,
+            "branch": None,
+            "worktree": str(workdir),
+            "summary": "当前目录不是 Git 仓库。",
+            "changes": [],
+            "diff": "",
+            "worktrees": [],
+        }
+
+    branch = _git_output(workdir, "branch", "--show-current") or "detached"
+    status = _git_output(workdir, "status", "--short") or ""
+    changes = _parse_git_status(status)
+    diff = _git_output(workdir, "diff", "--", ".") or ""
+    worktree_output = _git_output(workdir, "worktree", "list", "--porcelain") or ""
+    worktrees = _parse_git_worktrees(worktree_output, workdir)
+    summary = "工作区干净。" if not changes else f"{len(changes)} 个文件有变更。"
+    return {
+        "isGit": True,
+        "branch": branch,
+        "worktree": root,
+        "summary": summary,
+        "changes": changes[:30],
+        "diff": diff[:12_000],
+        "worktrees": worktrees,
+    }
+
+
+def _git_output(workdir: Path, *args: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workdir), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.rstrip("\n")
+
+
+def _parse_git_status(status: str) -> list[dict[str, str]]:
+    changes: list[dict[str, str]] = []
+    for raw in status.splitlines():
+        if not raw:
+            continue
+        code = raw[:2].strip() or "?"
+        path = raw[3:].strip() if len(raw) > 3 else raw.strip()
+        if " -> " in path:
+            _old, _, new = path.partition(" -> ")
+            path = new
+        changes.append({"status": code, "path": path})
+    return changes
+
+
+def _parse_git_worktrees(output: str, current: Path) -> list[dict[str, Any]]:
+    worktrees: list[dict[str, Any]] = []
+    current_entry: dict[str, Any] = {}
+    current_path = str(current.resolve())
+    for line in [*output.splitlines(), ""]:
+        if not line:
+            if current_entry.get("path"):
+                path = str(Path(str(current_entry["path"])).resolve())
+                branch_ref = str(current_entry.get("branch", ""))
+                current_entry["path"] = path
+                current_entry["branch"] = (
+                    branch_ref.removeprefix("refs/heads/") if branch_ref else "detached"
+                )
+                current_entry["current"] = path == current_path
+                worktrees.append(current_entry)
+            current_entry = {}
+            continue
+        key, _, value = line.partition(" ")
+        if key == "worktree":
+            current_entry["path"] = value
+        elif key == "HEAD":
+            current_entry["head"] = value
+        elif key == "branch":
+            current_entry["branch"] = value
+        elif key == "detached":
+            current_entry["branch"] = "detached"
+    return worktrees
 
 
 def _validate_project(workdir: Path) -> dict[str, Any]:
@@ -663,7 +1089,7 @@ def render_desktop_html() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>x-agentic-workflow</title>
+  <title>cat-agentic</title>
   <style>
     :root {
       --ink: #202633;
@@ -1016,78 +1442,187 @@ def render_desktop_html() -> str:
     .badge { font-size: 13px; padding: 3px 8px; border-radius: 7px; background: #edf2f7; color: #7b8795; font-weight: 760; }
     .badge.hot { background: #fff0e9; color: #cf5f35; }
     .settings-note { margin-top: 28px; color: #728094; line-height: 1.55; font-size: 15px; }
-    .app { grid-template-columns: 388px minmax(720px, 1fr); background: #fff; }
-    .app.inspector-collapsed { grid-template-columns: 388px minmax(720px, 1fr); }
+    .app { grid-template-columns: 388px minmax(720px, 1fr) 360px; background: #fff; }
+    .app.inspector-collapsed { grid-template-columns: 388px minmax(720px, 1fr) 56px; }
+    .app.sidebar-collapsed { grid-template-columns: 72px minmax(720px, 1fr) 360px; }
+    .app.sidebar-collapsed .sidebar-chrome { grid-template-columns: 1fr; padding-left: 12px; padding-right: 12px; }
+    .app.sidebar-collapsed .traffic,
+    .app.sidebar-collapsed .sidebar-arrows,
+    .app.sidebar-collapsed .brand-left span:last-child,
+    .app.sidebar-collapsed .brand-actions,
+    .app.sidebar-collapsed .main-nav span,
+    .app.sidebar-collapsed .sidebar-search-row,
+    .app.sidebar-collapsed .side-scroll,
+    .app.sidebar-collapsed .sidebar-footer { display: none; }
+    .app.sidebar-collapsed .brand { justify-content: center; padding: 8px 0 18px; }
+    .app.sidebar-collapsed .brand-left { justify-content: center; gap: 0; }
+    .app.sidebar-collapsed .main-nav { padding: 0; justify-items: center; }
+    .app.sidebar-collapsed .main-nav button { width: 44px; justify-content: center; padding: 0; font-size: 22px; }
     aside {
       background: #f3f6fa;
       border-right: 1px solid #dfe5ee;
-      padding: 14px 0 0;
+      padding: 0;
     }
-    .sidebar-chrome { grid-template-columns: 72px 1fr; padding: 0 16px 18px; }
+    .sidebar-chrome { display: none; }
+    .traffic { display: none; }
     .sidebar-arrows { gap: 18px; font-size: 18px; color: #7f8b9a; }
-    .main-nav { padding: 0 16px 22px; gap: 8px; }
+    .brand { padding: 14px 18px 30px; justify-content: flex-start; }
+    .brand-left { font-size: 16px; font-weight: 720; gap: 10px; color: #111827; flex: 1; }
+    .brand-left span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .brand-left em { color: #c86b4d; font-style: normal; }
+    .brand-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+    .brand-action {
+      width: 32px; height: 32px; border: 0; background: transparent; color: #7d8795;
+      display: grid; place-items: center; border-radius: 8px; cursor: pointer; font-size: 27px; font-weight: 760;
+    }
+    .brand-action:hover { background: #e8eef6; color: #344054; }
+    .logo { width: 42px; height: 42px; border-radius: 10px; font-size: 20px; flex: 0 0 auto; }
+    .main-nav { padding: 0 38px 34px; gap: 24px; }
     .main-nav button {
-      min-height: 44px; padding: 0 14px; border-radius: 10px; gap: 14px;
-      font-size: 16px; color: #596474;
+      min-height: 42px; padding: 0 0; border-radius: 8px; gap: 22px;
+      font-size: 24px; color: #596474; font-weight: 420;
     }
     .main-nav button:hover, .main-nav button.active {
-      background: #fff; color: #202633; box-shadow: 0 1px 0 rgba(24, 39, 64, .04);
+      background: transparent; color: #202633; box-shadow: none;
     }
-    .sidebar-section { padding: 0 16px 0 18px; }
-    .side-heading { color: #202633; font-size: 14px; font-weight: 760; margin: 22px 0 12px 6px; }
-    .project-header { padding: 0 6px; font-size: 15px; font-weight: 720; color: #202633; }
+    .nav-icon { width: 28px; display: inline-grid; place-items: center; font-size: 30px; line-height: 1; color: #4b5563; }
+    .nav-icon.clock-icon {
+      width: 28px; height: 28px; border: 3px solid currentColor; border-radius: 999px; position: relative;
+      margin-left: 2px;
+    }
+    .nav-icon.clock-icon::before {
+      content: ""; position: absolute; left: 11px; top: 5px; width: 3px; height: 10px;
+      background: currentColor; border-radius: 999px;
+    }
+    .nav-icon.clock-icon::after {
+      content: ""; position: absolute; left: 11px; top: 13px; width: 8px; height: 3px;
+      background: currentColor; border-radius: 999px;
+    }
+    .github-mark {
+      width: 30px; height: 30px; border-radius: 999px; background: #7d8795; color: #f3f6fa;
+      display: grid; place-items: center; position: relative;
+    }
+    .github-mark::before {
+      content: ""; width: 16px; height: 13px; border-radius: 9px 9px 6px 6px;
+      background: currentColor; transform: translateY(2px);
+    }
+    .github-mark::after {
+      content: ""; position: absolute; top: 5px; left: 7px; width: 16px; height: 10px;
+      border-radius: 3px 3px 0 0; border-top: 5px solid currentColor;
+      border-left: 4px solid transparent; border-right: 4px solid transparent;
+    }
+    .sidebar-search-row {
+      display: grid; grid-template-columns: 1fr 56px 56px; gap: 10px;
+      padding: 0 14px 34px; align-items: center;
+    }
+    .search-shell {
+      height: 56px; border: 2px solid #d6dee9; border-radius: 22px; background: #fff;
+      display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 8px;
+      padding: 0 14px 0 24px; color: #7d8795;
+    }
+    .search-icon {
+      width: 17px; height: 17px; border: 2px solid currentColor; border-radius: 999px;
+      position: relative; display: block; opacity: .78;
+    }
+    .search-icon::after {
+      content: ""; position: absolute; width: 8px; height: 2px; background: currentColor;
+      right: -6px; bottom: -3px; transform: rotate(45deg); border-radius: 999px;
+    }
+    .search-shortcut {
+      border: 1px solid #dbe3ee; border-radius: 7px; padding: 2px 8px;
+      color: #98a2b3; font-size: 12px; background: #fbfcfe;
+    }
+    .sidebar-search-row .session-search {
+      width: 100%; min-width: 0; height: 40px; margin: 0; padding: 0; border: 0; outline: 0;
+      background: transparent;
+      font-size: 16px;
+    }
+    .sidebar-tool-btn {
+      width: 56px; height: 56px; border: 2px solid #d6dee9; border-radius: 18px;
+      background: #fff; color: #536172; cursor: pointer; font-size: 24px;
+    }
+    .sidebar-tool-btn:hover { background: #f8fafc; color: #202633; }
+    .side-scroll { overflow: auto; min-height: 0; padding-bottom: 20px; }
+    .sidebar-section { padding: 0 24px 0 28px; }
+    .side-heading { color: #202633; font-size: 18px; font-weight: 760; margin: 0 0 34px; }
+    .project-block { gap: 20px; margin-bottom: 38px; }
+    .project-header { padding: 0; font-size: 20px; font-weight: 760; color: #111827; }
+    .project-icon.folder-icon {
+      width: 32px; height: 23px; border: 3px solid currentColor; border-radius: 6px; position: relative;
+      color: #111827; margin-right: 10px;
+    }
+    .project-icon.folder-icon::before {
+      content: ""; position: absolute; left: 2px; top: -10px; width: 18px; height: 10px;
+      border: 3px solid currentColor; border-bottom: 0; border-radius: 5px 5px 0 0; background: #f3f6fa;
+    }
     .conversation-row {
-      margin-left: 32px; min-height: 34px; padding: 0 10px; border-radius: 10px;
-      color: #596474; font-size: 14px;
+      margin-left: 54px; min-height: 44px; padding: 0; border-radius: 8px;
+      color: #4b5563; font-size: 17px; font-weight: 520;
     }
-    .conversation-row.active { margin-left: 32px; padding-left: 10px; background: #fff; color: #202633; }
-    .sidebar-footer { padding: 14px 16px; border-top-color: #dfe5ee; }
-    .account-card { grid-template-columns: 32px 1fr; min-height: 48px; border: 1px solid transparent; border-radius: 12px; padding: 0 12px; }
+    .conversation-row.active { margin-left: 54px; padding-left: 0; background: transparent; color: #202633; }
+    .conversation-row.muted { color: #aab3bf; }
+    .conversation-row button { font-size: inherit; font-weight: inherit; }
+    .session-meta, .relative-age { color: #7d8795; font-size: 14px; font-weight: 440; }
+    .shortcut { font-size: 15px; }
+    .sidebar-footer { padding: 24px 14px 20px; border-top-color: #dfe5ee; }
+    .account-card {
+      display: flex; align-items: center; gap: 16px; min-height: 64px; border: 0; border-radius: 18px;
+      padding: 0 22px; background: rgba(255,255,255,.78);
+    }
     .account-card:hover { border-color: #e5a400; background: #fff; }
-    .account-avatar { width: 0; height: 0; overflow: hidden; }
+    .settings-gear { font-size: 32px; color: #111827; line-height: 1; }
+    .account-title { font-size: 20px; font-weight: 760; color: #111827; white-space: nowrap; }
     .account-chevron { display: none; }
     .topbar {
-      height: 64px; grid-template-columns: 1fr auto; padding: 0; border-bottom: 1px solid #e7ebf1;
+      height: 62px; grid-template-columns: 1fr auto; padding: 0; border-bottom: 1px solid #e7ebf1;
       background: #fff;
     }
     .mode-tabs { height: 100%; }
+    .mode-tab-static {
+      min-width: 190px; border-right: 1px solid #eef1f5; display: grid; place-items: center;
+      color: #697586; font-size: 15px; font-weight: 640; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      padding: 0 18px;
+    }
     .mode-tab {
-      min-width: 250px; border-right: 1px solid #eef1f5; border-bottom-width: 3px;
+      min-width: 170px; border-right: 1px solid #eef1f5; border-bottom-width: 3px;
       font-size: 15px; font-weight: 640; color: #697586;
     }
     .mode-tab.active { color: #202633; border-bottom-color: #ad6048; }
     .terminal { margin-right: 24px; color: #7d8795; }
     .stage { padding: 0; background: #fff; }
-    .hero { width: min(1080px, 100%); padding: 0 32px 22px; }
+    .hero { width: min(1120px, 100%); padding: 0 32px 22px; }
     .hero-main {
-      width: min(720px, 100%); margin: auto auto 0; display: grid; justify-items: center;
-      text-align: center; flex: 1; align-content: center;
+      width: min(720px, 100%); margin: 0 auto; display: grid; justify-items: center;
+      text-align: center; flex: 1; align-content: start; padding-top: 160px;
     }
     .hero-logo {
-      width: 92px; height: 92px; border: 1px solid #edf1f6; border-radius: 24px;
+      width: 84px; height: 84px; border: 1px solid #edf1f6; border-radius: 18px;
       margin: 0 0 30px; color: #2d7df0; background: #fff; box-shadow: 0 8px 28px rgba(31, 45, 69, .08);
-      font-size: 42px;
+      font-size: 40px;
     }
     .greeting {
       display: grid; justify-items: center; margin: 0; color: #101828;
       font-size: 32px; font-weight: 780; letter-spacing: 0;
     }
-    .subline { margin: 16px 0 0; color: #667085; font-size: 17px; max-width: 460px; }
-    .composer-dock { width: min(1068px, 100%); margin: 0 auto; padding-top: 20px; }
+    .subline { margin: 16px 0 0; color: #667085; font-size: 17px; max-width: 500px; }
+    .composer-dock { width: min(1068px, 100%); margin: 0 auto 0; padding-top: 12px; }
     .composer-context { display: none; }
     .composer {
-      border: 2px solid #dce5ef; border-radius: 20px; box-shadow: 0 10px 34px rgba(31,45,69,.12);
+      border: 2px solid #dce5ef; border-radius: 20px; box-shadow: 0 12px 34px rgba(31,45,69,.13);
       min-width: 0;
     }
-    textarea { min-height: 138px; padding: 24px 26px 16px; font-size: 17px; }
+    textarea { min-height: 132px; padding: 24px 26px 16px; font-size: 17px; }
     .composer-actions { border-top: 1px solid #e7ebf1; padding: 14px 18px; align-items: center; }
+    .composer .composer-actions { display: flex; }
+    .composer-dock > .composer-actions { display: none; }
+    .round { height: 36px; min-width: 36px; font-size: 22px; border: 0; background: transparent; color: #344054; padding: 0; }
+    .pill { height: 36px; border: 0; background: #f7f8fa; color: #475467; font-weight: 640; }
+    .model { min-height: 36px; border-radius: 999px; background: #f7f8fa; padding: 0 16px; color: #344054; font-weight: 680; }
     .send { min-width: 116px; height: 44px; border-radius: 14px; background: #d8b8ad; border-color: #d8b8ad; }
     .project-picker { border-top: 1px solid #e7ebf1; padding: 14px 22px; background: #fff; }
     .messages { width: min(900px, 100%); max-height: 180px; text-align: left; }
     .session-search {
-      width: calc(100% - 32px); height: 40px; margin: 0 16px 10px 32px;
-      border: 1px solid #dbe3ee; border-radius: 12px; background: #fff; padding: 0 12px;
-      color: #202633; font: inherit; font-size: 14px;
+      border: 1px solid #dbe3ee; background: #fff; color: #202633; font: inherit; font-size: 14px;
     }
     .session-meta { color: #8a94a3; font-size: 12px; white-space: nowrap; }
     .restore-pill {
@@ -1112,7 +1647,44 @@ def render_desktop_html() -> str:
     .attachment-chip button:hover { background: #e9eef5; color: #344054; }
     .attachment-status { min-height: 18px; padding: 4px 18px 0; color: #b42318; font-size: 12px; }
     .attachment-input { display: none; }
-    .inspector { display: none; }
+    .inspector {
+      display: block; border-left: 1px solid #e7ebf1; background: #fff;
+      padding: 18px 18px 22px; min-width: 0; height: 100vh; overflow: auto;
+    }
+    .inspector-toolbar {
+      height: 44px; margin: -18px -18px 16px; padding: 0 12px;
+      border-bottom: 1px solid #e7ebf1;
+    }
+    .inspector-card { border-radius: 12px; box-shadow: none; padding: 16px; }
+    .workspace-summary { display: grid; gap: 8px; }
+    .workspace-pill {
+      display: inline-flex; width: fit-content; max-width: 100%; border: 1px solid #dbe3ee;
+      border-radius: 999px; padding: 5px 9px; color: #344054; background: #f8fafc;
+      font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .workspace-summary-text { color: #475467; font-size: 13px; line-height: 1.45; }
+    .worktree-list { display: grid; gap: 8px; }
+    .worktree-row {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center;
+      min-height: 40px; border-bottom: 1px solid #eef1f5; padding: 0 0 8px;
+    }
+    .worktree-row:last-child { border-bottom: 0; }
+    .worktree-name { color: #344054; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .worktree-path { margin-top: 3px; color: #98a2b3; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .worktree-action {
+      border: 1px solid #dbe3ee; border-radius: 8px; background: #fff; color: #475467;
+      height: 30px; padding: 0 9px; cursor: pointer; font-size: 12px;
+    }
+    .worktree-action:disabled { color: #98a2b3; background: #f8fafc; cursor: default; }
+    .worktree-form { display: grid; gap: 8px; margin-top: 12px; }
+    .worktree-form input {
+      width: 100%; min-width: 0; height: 34px; border: 1px solid #dbe3ee; border-radius: 8px;
+      padding: 0 9px; font: inherit; font-size: 12px; color: #344054; background: #fff;
+    }
+    .worktree-form .worktree-action { justify-self: start; }
+    .worktree-result { min-height: 18px; margin-top: 8px; color: #667085; font-size: 12px; line-height: 1.4; }
+    .worktree-result.ok { color: #067647; }
+    .worktree-result.bad { color: #b42318; }
     .settings-layout { grid-template-columns: 250px 1fr; min-height: calc(100vh - 64px); }
     .settings-nav { background: #fff; border-right: 1px solid #e7ebf1; padding: 18px 0; }
     .settings-nav button {
@@ -1132,6 +1704,44 @@ def render_desktop_html() -> str:
     .provider-save-status.dirty { border-color: #f0c36d; color: #8a5a00; background: #fffaf0; }
     .provider-actions button:disabled { cursor: default; opacity: .62; }
     .provider-card { cursor: default; }
+    .scheduled-panel {
+      width: min(820px, 100%); margin: 96px auto 0; display: grid; gap: 18px;
+      color: #202633;
+    }
+    .scheduled-title { font-size: 28px; font-weight: 780; }
+    .scheduled-empty {
+      border: 1px solid #dbe3ee; border-radius: 18px; background: #fff;
+      box-shadow: 0 10px 34px rgba(31,45,69,.08); padding: 28px; color: #667085;
+      line-height: 1.6; font-size: 16px;
+    }
+    .scheduled-form {
+      display: grid; grid-template-columns: 1fr 180px; gap: 12px;
+      border: 1px solid #dbe3ee; border-radius: 18px; background: #fff; padding: 18px;
+    }
+    .scheduled-form input, .scheduled-form textarea {
+      border: 1px solid #dbe3ee; border-radius: 10px; font: inherit; color: #202633;
+      background: #fff;
+    }
+    .scheduled-form input { height: 42px; padding: 0 12px; }
+    .scheduled-form textarea {
+      grid-column: 1 / -1; min-height: 110px; padding: 12px; resize: vertical; font-size: 15px;
+    }
+    .scheduled-form .primary-btn { justify-self: start; }
+    .scheduled-list { display: grid; gap: 10px; }
+    .scheduled-task {
+      display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center;
+      border: 1px solid #dbe3ee; border-radius: 14px; background: #fff; padding: 14px 16px;
+    }
+    .scheduled-task-title { font-weight: 760; color: #202633; }
+    .scheduled-task-meta { margin-top: 4px; color: #667085; font-size: 13px; }
+    .scheduled-task-run {
+      margin-top: 8px; color: #344054; font-size: 13px; line-height: 1.45;
+      max-width: 680px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .scheduled-task button {
+      border: 1px solid #dbe3ee; background: #fff; color: #667085; border-radius: 10px;
+      height: 34px; padding: 0 12px; cursor: pointer;
+    }
     @media (max-width: 860px) {
       .app { grid-template-columns: 1fr; }
       aside { display: none; }
@@ -1156,41 +1766,53 @@ def render_desktop_html() -> str:
         <div class="sidebar-arrows"><span>▯</span><span>‹</span><span>›</span></div>
       </div>
       <div class="brand">
-        <div class="brand-left"><span class="logo">X</span><span>X Agentic Workflow</span></div>
+        <div class="brand-left"><span class="logo">C</span><span>cat-<em>agentic</em></span></div>
+        <div class="brand-actions">
+          <button class="brand-action" id="githubBtn" title="打开 GitHub 仓库"><span class="github-mark" aria-hidden="true"></span></button>
+          <button class="brand-action" id="sidebarToggle" title="折叠侧栏">‹</button>
+        </div>
       </div>
       <nav class="main-nav">
-        <button class="active" id="newChat">＋ <span>新建会话</span></button>
-        <button id="navSettings">⚙ <span>设置</span></button>
+        <button class="active" id="newChat"><span class="nav-icon">＋</span><span>新建会话</span></button>
+        <button id="scheduledBtn"><span class="nav-icon clock-icon" aria-hidden="true"></span><span>定时任务</span></button>
       </nav>
+      <div class="sidebar-search-row">
+        <label class="search-shell" for="sessionSearch">
+          <span class="search-icon" aria-hidden="true"></span>
+          <input class="session-search" id="sessionSearch" placeholder="搜索聊天" />
+          <span class="search-shortcut">⌘K</span>
+        </label>
+        <button class="sidebar-tool-btn" id="refreshSessions" title="刷新会话列表">↻</button>
+        <button class="sidebar-tool-btn" id="clearSessionSearch" title="清空搜索">⌫</button>
+      </div>
       <div class="side-scroll">
         <div class="sidebar-section">
           <div class="side-heading">项目</div>
           <div class="project-block">
-            <div class="project-header"><span class="project-icon">▱</span><span id="currentProjectName">x-agentic-workflow</span></div>
+            <div class="project-header"><span class="project-icon folder-icon" aria-hidden="true"></span><span id="currentProjectName">x-agentic-workflow</span></div>
             <div class="conversation-row active"><span class="conversation-title" id="currentProjectPath">354685856-sn/x-agentic-workflow</span><span class="shortcut">当前</span></div>
+            <div id="recents"><div class="conversation-row muted"><span class="conversation-title">暂无聊天</span></div></div>
           </div>
           <div class="project-block">
-            <div class="project-header"><span class="project-icon">▱</span><span>最近项目</span></div>
+            <div class="project-header"><span class="project-icon folder-icon" aria-hidden="true"></span><span>最近项目</span></div>
             <div id="recentProjects"><div class="conversation-row muted"><span class="conversation-title">暂无最近项目</span></div></div>
           </div>
-          <div class="side-heading">对话</div>
-          <input class="session-search" id="sessionSearch" placeholder="搜索会话" />
-          <div id="recents"><div class="conversation-row muted"><span class="conversation-title">暂无聊天</span></div></div>
         </div>
       </div>
       <div class="sidebar-footer">
         <button class="account-card" id="settingsBtn">
-          <span class="account-avatar">设</span>
-          <span><span class="account-title">设置</span><span class="account-sub">账户</span></span>
-          <span class="account-chevron">⌄</span>
+          <span class="settings-gear" aria-hidden="true">⚙</span>
+          <span class="account-title">设置</span>
         </button>
       </div>
     </aside>
     <main>
       <div class="topbar">
         <div class="mode-tabs">
-          <button class="mode-tab active" id="chatTab">x-agentic-workflow</button>
+          <span class="mode-tab-static" id="projectTopTab">x-agentic-workflow</span>
           <button class="mode-tab" id="settingsTab">⚙ 设置</button>
+          <button class="mode-tab active" id="chatTab">新建会话</button>
+          <button class="mode-tab" id="scheduledTab">◷ 定时任务</button>
         </div>
         <span class="terminal">›_</span>
       </div>
@@ -1198,28 +1820,28 @@ def render_desktop_html() -> str:
         <div class="screen active" id="chatScreen">
           <div class="hero">
             <div class="hero-main">
-              <div class="hero-logo">X</div>
+              <div class="hero-logo">C</div>
               <h1 class="greeting" id="sessionTitle">新建会话</h1>
-              <div class="subline" id="sessionSubtitle">开始一个新的编码会话。XAW 已准备好帮你构建、调试和整理项目。</div>
+              <div class="subline" id="sessionSubtitle">开始一个新的编码会话。cat-agentic 已准备好帮你构建、调试和整理项目。</div>
               <div class="restore-pill" id="restorePill">已恢复会话</div>
               <div class="messages" id="messages"></div>
             </div>
             <div class="composer-dock">
               <div class="composer">
-                <div class="notice"><span id="status">x-agentic-workflow is ready.</span><small id="workdir"></small></div>
+                <div class="notice"><span id="status">cat-agentic is ready.</span><small id="workdir"></small></div>
                 <div class="attachment-strip" id="attachmentStrip"></div>
                 <div class="attachment-status" id="attachmentStatus"></div>
                 <textarea id="prompt" placeholder="随便问点什么..."></textarea>
                 <input class="attachment-input" id="attachmentInput" type="file" multiple
                   accept=".txt,.md,.json,.yaml,.yml,.toml,.py,.js,.ts,.tsx,.jsx,.css,.html,.xml,.csv,.log,text/*" />
+                <div class="composer-actions">
+                  <div class="left-tools"><button class="round" id="attachButton" title="添加文本文件">＋</button><button class="pill" id="validateProject">验证项目</button></div>
+                  <div class="right-tools"><span class="model" id="model">model</span><button class="send" id="send">运行</button></div>
+                </div>
                 <div class="project-picker">
                   <input id="projectPathInput" placeholder="/path/to/project" />
                   <button id="switchProject">切换项目</button>
                 </div>
-              </div>
-              <div class="composer-actions">
-                <div class="left-tools"><button class="pill" id="validateProject">验证项目</button><button class="round" id="attachButton" title="添加文本文件">＋</button></div>
-                <div class="right-tools"><span class="model" id="model">model</span><button class="send" id="send">运行</button></div>
               </div>
             </div>
           </div>
@@ -1274,6 +1896,20 @@ def render_desktop_html() -> str:
             </div>
           </div>
         </div>
+        <div class="screen" id="scheduledScreen">
+          <div class="scheduled-panel">
+            <div class="scheduled-title">定时任务</div>
+            <div class="scheduled-empty" id="scheduledEmpty">正在读取本地定时任务...</div>
+            <div class="scheduled-form">
+              <input id="scheduledTitle" placeholder="任务名称" />
+              <input id="scheduledTime" placeholder="例如：每天 09:00" />
+              <textarea id="scheduledPrompt" placeholder="要定时执行的提示词"></textarea>
+              <button class="primary-btn" id="createScheduledTask">保存定时任务</button>
+              <div class="settings-result" id="scheduledResult"></div>
+            </div>
+            <div class="scheduled-list" id="scheduledList"></div>
+          </div>
+        </div>
       </section>
     </main>
     <aside class="inspector">
@@ -1282,34 +1918,45 @@ def render_desktop_html() -> str:
         <button class="inspector-btn active" id="inspectorToggle" title="收起右侧栏"><span class="toolbar-icon toolbar-rect"></span></button>
         <button class="inspector-btn hide-when-collapsed" title="右侧视图"><span class="toolbar-icon toolbar-side"></span></button>
       </div>
-      <div class="inspector-card">
+        <div class="inspector-card">
         <div class="inspector-section">
-          <div class="inspector-title">项目验证</div>
-          <div class="validation-box" id="projectValidation">
-            <div class="validation-summary">尚未验证当前项目。</div>
+          <div class="inspector-title">工作区</div>
+          <div class="workspace-summary" id="workspaceSummary">
+            <span class="workspace-pill">读取中</span>
+            <div class="workspace-summary-text">正在读取当前工作区状态。</div>
           </div>
         </div>
         <div class="inspector-section">
-          <div class="inspector-title">文件变更</div>
-          <div id="fileChanges"><div class="empty-note">暂无文件变更。</div></div>
+          <div class="inspector-title">Worktree</div>
+          <div class="worktree-list" id="worktreeList">
+            <div class="empty-note">正在读取 Worktree...</div>
+          </div>
+          <div class="worktree-form">
+            <input id="worktreeBranch" placeholder="新分支，例如 feature/task" />
+            <input id="worktreePath" placeholder="Worktree 目录" />
+            <button class="worktree-action" id="createWorktree">创建 Worktree</button>
+          </div>
+          <div class="worktree-result" id="worktreeResult"></div>
         </div>
+        <div class="inspector-section">
+          <div class="inspector-title">项目验证</div>
+            <div class="validation-box" id="projectValidation">
+              <div class="validation-summary">尚未验证当前项目。</div>
+            </div>
+          </div>
+          <div class="inspector-section">
+            <div class="inspector-title">文件变更</div>
+            <div id="fileChanges"><div class="empty-note">暂无文件变更。</div></div>
+          </div>
         <div class="inspector-section">
           <div class="inspector-title">Diff</div>
           <pre class="diff-view" id="latestDiff">暂无 diff。</pre>
         </div>
-        <div class="inspector-section">
-          <div class="inspector-title">任务</div>
-          <div class="task-row"><span>▸</span><span>.venv/bin/xaw desktop --host 127.0.0.1</span></div>
+          <div class="inspector-section">
+            <div class="inspector-title">任务</div>
+              <div class="task-row"><span>▸</span><span>.venv/bin/cat-agentic desktop --host 127.0.0.1</span></div>
+          </div>
         </div>
-        <div class="inspector-section">
-          <div class="inspector-title">浏览器</div>
-          <div class="task-row"><span>◎</span><span>x-agentic-workflow 127.0.0.1</span></div>
-        </div>
-        <div class="inspector-section">
-          <div class="inspector-title">来源</div>
-          <div class="source-dots"><span>▣</span><span>◎</span><span>◎</span><span>◎</span><span>◎</span><span>◎</span><span>◎</span><span>◎</span></div>
-        </div>
-      </div>
     </aside>
   </div>
   <script>
@@ -1332,17 +1979,18 @@ def render_desktop_html() -> str:
       const parts = state.workdir.split('/').filter(Boolean);
       const projectName = parts[parts.length - 1] || state.workdir;
       const projectPath = parts.slice(-2).join('/') || projectName;
-      $('status').textContent = state.apiKeyPresent ? 'x-agentic-workflow is ready.' : 'API key missing. Set your BYOK environment variable to run prompts.';
+      $('status').textContent = state.apiKeyPresent ? 'cat-agentic is ready.' : 'API key missing. Set your BYOK environment variable to run prompts.';
       $('workdir').textContent = projectPath;
       $('currentProjectName').textContent = projectName;
       $('currentProjectPath').textContent = projectPath;
+      $('projectTopTab').textContent = projectName;
       $('projectPathInput').value = state.workdir;
-      $('chatTab').textContent = projectName;
       restoreDraftForState(state);
       $('sessionTitle').textContent = state.sessionTitle || '新建会话';
+      $('chatTab').textContent = state.sessionTitle || '新建会话';
       $('sessionSubtitle').textContent = state.sessionRestored
         ? `已恢复 ${state.sessionId}。你可以继续这段会话，文件变更和 diff 会保留。`
-        : '开始一个新的编码会话。XAW 已准备好帮你构建、调试和整理项目。';
+        : '开始一个新的编码会话。cat-agentic 已准备好帮你构建、调试和整理项目。';
       $('restorePill').classList.toggle('active', !!state.sessionRestored);
       $('restorePill').textContent = state.sessionRestored ? `已恢复 · ${state.sessionId}` : '';
       if (state.attachmentError) showAttachmentStatus(state.attachmentError.message);
@@ -1356,7 +2004,10 @@ def render_desktop_html() -> str:
       }
       renderRecentProjects(state.recentProjects || []);
       renderFileChanges(state.fileChanges || [], state.selectedDiff || state.latestDiff, state.selectedDiffIndex);
+      renderWorkspaceStatus(state.workspaceStatus);
+      if (state.worktreeCreate) showWorktreeResult(state.worktreeCreate);
       renderSessions(state.sessionDetails || []);
+      renderScheduledState(state);
       $('messages').innerHTML = state.messages.map(m => `<div class="msg ${m.role}">${escapeHtml(m.content)}</div>`).join('');
       document.querySelectorAll('[data-session]').forEach(btn => btn.onclick = async () => {
         saveCurrentDraft();
@@ -1460,6 +2111,43 @@ def render_desktop_html() -> str:
       box.classList.toggle('ok', !!result.ok);
       box.classList.toggle('bad', !result.ok);
     }
+    function renderWorkspaceStatus(status) {
+      const box = $('workspaceSummary');
+      const worktreeList = $('worktreeList');
+      if (!status) {
+        box.innerHTML = '<span class="workspace-pill">未读取</span><div class="workspace-summary-text">暂无工作区状态。</div>';
+        worktreeList.innerHTML = '<div class="empty-note">暂无 Worktree 状态。</div>';
+        return;
+      }
+      const branch = status.isGit ? `分支 ${status.branch || 'detached'}` : '非 Git';
+      const summary = status.summary || '';
+      const worktree = status.worktree || '';
+      box.innerHTML = `<span class="workspace-pill">${escapeHtml(branch)}</span><div class="workspace-summary-text">${escapeHtml(summary)}</div><div class="workspace-summary-text" title="${escapeHtml(worktree)}">${escapeHtml(worktree)}</div>`;
+      const worktrees = status.worktrees || [];
+      worktreeList.innerHTML = worktrees.map(item => {
+        const current = !!item.current;
+        const label = current ? '当前' : '切换';
+        return `<div class="worktree-row"><div><div class="worktree-name">${escapeHtml(String(item.branch || 'detached'))}</div><div class="worktree-path" title="${escapeHtml(String(item.path || ''))}">${escapeHtml(String(item.path || ''))}</div></div><button class="worktree-action" data-worktree-path="${escapeHtml(String(item.path || ''))}" ${current ? 'disabled' : ''}>${label}</button></div>`;
+      }).join('') || '<div class="empty-note">暂无 Worktree。</div>';
+      document.querySelectorAll('[data-worktree-path]').forEach(button => {
+        if (!button.disabled) button.onclick = () => switchProject(button.dataset.worktreePath);
+      });
+      $('createWorktree').disabled = !status.isGit;
+      if (status.diff && !($('latestDiff').textContent || '').trim().startsWith('---')) {
+        $('latestDiff').textContent = status.diff;
+      }
+      if (status.changes && status.changes.length && !$('fileChanges').querySelector('[data-diff-index]')) {
+        $('fileChanges').innerHTML = status.changes.map(change =>
+          `<div class="file-row"><span>${escapeHtml(String(change.status || '?'))}</span><span title="${escapeHtml(String(change.path || ''))}">${escapeHtml(String(change.path || ''))}</span></div>`
+        ).join('');
+      }
+    }
+    function showWorktreeResult(result) {
+      const box = $('worktreeResult');
+      box.textContent = result.message || '';
+      box.classList.toggle('ok', !!result.ok);
+      box.classList.toggle('bad', !result.ok);
+    }
     function renderProjectValidation(result) {
       const box = $('projectValidation');
       if (!result) {
@@ -1496,6 +2184,30 @@ def render_desktop_html() -> str:
         return `<div class="conversation-row" data-session="${escapeHtml(session.id)}"><span class="conversation-title" title="${escapeHtml(session.id)}">${escapeHtml(session.title)}</span><span class="session-meta">${escapeHtml(meta || `⌘${i + 1}`)}</span></div>`;
       }).join('') || '<div class="conversation-row muted"><span class="conversation-title">暂无匹配会话</span></div>';
     }
+    function renderScheduledState(state) {
+      const tasks = state.scheduledTasks || [];
+      $('scheduledEmpty').textContent = state.scheduledSummary || '暂无定时任务。';
+      $('scheduledList').innerHTML = tasks.map(task => {
+        const title = escapeHtml(String(task.title || '未命名任务'));
+        const schedule = escapeHtml(String(task.schedule || '未设置时间'));
+        const project = escapeHtml(String(task.projectPath || ''));
+        const status = escapeHtml(String(task.status || 'saved'));
+        const nextRun = task.nextRunAt ? formatDateTime(task.nextRunAt) : '未排程';
+        const lastRun = task.lastRunAt ? formatDateTime(task.lastRunAt) : '尚未运行';
+        const latest = task.runs && task.runs.length ? escapeHtml(String(task.runs[0].summary || '')) : '';
+        const runNote = latest ? `<div class="scheduled-task-run">${latest}</div>` : '';
+        return `<div class="scheduled-task"><div><div class="scheduled-task-title">${title}</div><div class="scheduled-task-meta">${schedule} · ${status} · 下次 ${escapeHtml(nextRun)} · 最近 ${escapeHtml(lastRun)}</div><div class="scheduled-task-meta">${project}</div>${runNote}</div><button data-delete-scheduled="${escapeHtml(String(task.id))}">删除</button></div>`;
+      }).join('');
+      document.querySelectorAll('[data-delete-scheduled]').forEach(button => {
+        button.onclick = async () => render(await api('/api/scheduled/delete', {id: button.dataset.deleteScheduled}));
+      });
+      if (state.scheduledResult) {
+        const result = $('scheduledResult');
+        result.textContent = state.scheduledResult.message;
+        result.classList.toggle('ok', !!state.scheduledResult.ok);
+        result.classList.toggle('bad', !state.scheduledResult.ok);
+      }
+    }
     function renderFileChanges(changes, latest, selectedIndex) {
       const box = $('fileChanges');
       if (!changes.length) {
@@ -1513,12 +2225,21 @@ def render_desktop_html() -> str:
     function escapeHtml(text) {
       return text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
     }
+    function formatDateTime(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return date.toLocaleString([], {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'});
+    }
     function showScreen(name) {
       const chat = name === 'chat';
+      const settings = name === 'settings';
+      const scheduled = name === 'scheduled';
       $('chatScreen').classList.toggle('active', chat);
-      $('settingsScreen').classList.toggle('active', !chat);
+      $('settingsScreen').classList.toggle('active', settings);
+      $('scheduledScreen').classList.toggle('active', scheduled);
       $('chatTab').classList.toggle('active', chat);
-      $('settingsTab').classList.toggle('active', !chat);
+      $('settingsTab').classList.toggle('active', settings);
+      $('scheduledTab').classList.toggle('active', scheduled);
     }
     function setNavActive(id) {
       document.querySelectorAll('.main-nav button').forEach(btn => btn.classList.toggle('active', btn.id === id));
@@ -1612,11 +2333,50 @@ def render_desktop_html() -> str:
       setNavActive('newChat');
       render(await api('/api/new', {}));
     };
-    $('navSettings').onclick = () => { setNavActive('navSettings'); showScreen('settings'); };
-    $('settingsBtn').onclick = () => { setNavActive('navSettings'); showScreen('settings'); };
-    $('settingsTab').onclick = () => { setNavActive('navSettings'); showScreen('settings'); };
+    $('settingsBtn').onclick = () => { setNavActive(''); showScreen('settings'); };
+    $('settingsTab').onclick = () => { setNavActive(''); showScreen('settings'); };
     $('chatTab').onclick = () => { setNavActive('newChat'); showScreen('chat'); };
+    async function openScheduled() {
+      setNavActive('scheduledBtn');
+      showScreen('scheduled');
+      const state = await api('/api/scheduled');
+      renderScheduledState(state);
+    }
+    $('scheduledBtn').onclick = openScheduled;
+    $('scheduledTab').onclick = openScheduled;
+    $('createScheduledTask').onclick = async () => {
+      const button = $('createScheduledTask');
+      button.disabled = true;
+      button.textContent = '保存中...';
+      try {
+        const state = await api('/api/scheduled/create', {
+          title: $('scheduledTitle').value,
+          schedule: $('scheduledTime').value,
+          prompt: $('scheduledPrompt').value
+        });
+        if (state.scheduledResult && state.scheduledResult.ok) {
+          $('scheduledTitle').value = '';
+          $('scheduledTime').value = '';
+          $('scheduledPrompt').value = '';
+        }
+        renderScheduledState(state);
+      } finally {
+        button.disabled = false;
+        button.textContent = '保存定时任务';
+      }
+    };
     $('sessionSearch').addEventListener('input', async () => render(await api('/api/state')));
+    $('refreshSessions').onclick = async () => render(await api('/api/state'));
+    $('clearSessionSearch').onclick = async () => {
+      $('sessionSearch').value = '';
+      render(await api('/api/state'));
+    };
+    $('githubBtn').onclick = () => {
+      window.open('https://github.com/354685856-sn/x-agentic-workflow', '_blank', 'noopener,noreferrer');
+    };
+    $('sidebarToggle').onclick = () => {
+      document.querySelector('.app').classList.toggle('sidebar-collapsed');
+    };
     $('inspectorToggle').onclick = () => {
       const app = document.querySelector('.app');
       const collapsed = app.classList.toggle('inspector-collapsed');
@@ -1646,6 +2406,29 @@ def render_desktop_html() -> str:
     }
     $('switchProject').onclick = async () => switchProject();
     $('projectPathInput').addEventListener('keydown', e => { if (e.key === 'Enter') switchProject(); });
+    $('createWorktree').onclick = async () => {
+      const button = $('createWorktree');
+      const branch = $('worktreeBranch').value.trim();
+      const path = $('worktreePath').value.trim();
+      if (!branch || !path) {
+        showWorktreeResult({ok: false, message: '请填写新分支名和 Worktree 目录。'});
+        return;
+      }
+      button.disabled = true;
+      button.textContent = '创建中...';
+      showWorktreeResult({ok: true, message: '正在创建 Worktree...'});
+      try {
+        const state = await api('/api/worktree/create', {branch, path});
+        if (state.worktreeCreate && state.worktreeCreate.ok) {
+          $('worktreeBranch').value = '';
+          $('worktreePath').value = '';
+        }
+        render(state);
+      } finally {
+        button.disabled = false;
+        button.textContent = '创建 Worktree';
+      }
+    };
     $('validateProject').onclick = async () => {
       const button = $('validateProject');
       button.disabled = true;

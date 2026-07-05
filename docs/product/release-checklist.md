@@ -1,25 +1,26 @@
-# x-agentic-workflow release checklist
+# cat-agentic release checklist
 
-Last updated: 2026-07-04
+Last updated: 2026-07-05
 
-## v0.16.0 release target
+## v0.17.0 release target
 
-- Package: `x-agentic-workflow`
+- Package: `cat-agentic`
 - CLI commands:
-  - `xaw chat`
-  - `xaw tui`
-  - `xaw run -p "..."`
-  - `xaw doctor`
-  - `xaw sessions`
-  - `xaw smoke-openai-compatible`
-- Install target: `pipx install x-agentic-workflow`
-- UI target: `xaw tui` multi-panel hybrid terminal app with workspace status,
+  - `cat-agentic chat`
+  - `cat-agentic tui`
+  - `cat-agentic run -p "..."`
+  - `cat-agentic doctor`
+  - `cat-agentic sessions`
+  - `cat-agentic smoke-openai-compatible`
+- Compatibility commands: `xaw`, `x-agentic-workflow`
+- Install target: `pipx install cat-agentic`
+- UI target: `cat-agentic tui` multi-panel hybrid terminal app with workspace status,
   selectable sessions, extension status, live tool-call timeline, latest file
   diff viewer, approval status, transcript, composer, and shortcut help.
 - Runtime target: tool dispatch emits structured events and `write_file`
   returns diff metadata for auditability.
-- Desktop target: `xaw desktop` launches a clean-room local browser UI, and
-  `apps/macos/X Agentic Workflow.app` provides a GitHub-download developer
+- Desktop target: `cat-agentic desktop` launches a clean-room local browser UI, and
+  `apps/macos/Cat Agentic.app` provides a GitHub-download developer
   preview double-click launcher for macOS.
 - Provider Settings target: the desktop UI can save provider metadata, test
   connectivity, avoid storing secret values, and redact secret-looking provider
@@ -65,9 +66,10 @@ Last updated: 2026-07-04
 .venv/bin/python -m pytest
 .venv/bin/python -m ruff check src tests
 .venv/bin/python -m mypy src/x_agentic_workflow
+.venv/bin/cat-agentic --version
+.venv/bin/cat-agentic desktop --help
+.venv/bin/cat-agentic smoke-openai-compatible --allow-skip
 .venv/bin/xaw --version
-.venv/bin/xaw desktop --help
-.venv/bin/xaw smoke-openai-compatible --allow-skip
 .venv/bin/python -m build
 .venv/bin/python -m twine check dist/x_agentic_workflow-*
 ```
@@ -75,11 +77,11 @@ Last updated: 2026-07-04
 ## Desktop delivery checks
 
 ```bash
-plutil -lint "apps/macos/X Agentic Workflow.app/Contents/Info.plist"
-test -x "apps/macos/X Agentic Workflow.app/Contents/MacOS/x-agentic-workflow"
+plutil -lint "apps/macos/Cat Agentic.app/Contents/Info.plist"
+test -x "apps/macos/Cat Agentic.app/Contents/MacOS/cat-agentic"
 ./scripts/build-macos-preview-dmg.sh
 ./scripts/smoke-macos-preview-dmg.sh
-./scripts/check-macos-signing.sh "apps/macos/X Agentic Workflow.app"
+./scripts/check-macos-signing.sh "apps/macos/Cat Agentic.app"
 ```
 
 Before public customer distribution, additionally verify:

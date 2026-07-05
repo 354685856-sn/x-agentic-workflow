@@ -15,7 +15,7 @@ from .tools import ToolRegistry, tool_specs
 from .types import AgentEvent, Message
 from .ui import assistant, error, tool_call, tool_result, user_prompt
 
-BASE_SYSTEM_PROMPT = """You are x-agentic-workflow, a direct terminal coding assistant.
+BASE_SYSTEM_PROMPT = """You are cat-agentic, a direct terminal coding assistant.
 Work in small, verifiable steps. Use tools for file and command work. Respect the
 project sandbox. Ask before risky external side effects. Keep responses concise."""
 
@@ -42,7 +42,7 @@ class Agent:
             self.messages.append(Message(role="system", content=self._system_prompt("")))
 
     def run_interactive(self) -> int:
-        assistant(f"x-agentic-workflow ready. session={self.session_id}. Type /exit to quit.")
+        assistant(f"cat-agentic ready. session={self.session_id}. Type /exit to quit.")
         for hook_output in self.hooks.run("session_start", self.config.workdir):
             tool_result(hook_output)
         while True:

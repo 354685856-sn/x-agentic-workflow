@@ -1,6 +1,6 @@
-# x-agentic-workflow clean-room scope
+# cat-agentic clean-room scope
 
-`x-agentic-workflow` targets the same product category as terminal AI coding
+`cat-agentic` targets the same product category as terminal AI coding
 assistants such as Codex CLI, Gemini CLI, aider, Cline, and Claude-style local
 coding assistants.
 
@@ -23,15 +23,15 @@ coding assistants.
 ## v0.1 scope
 
 - Python package installable with `pipx`.
-- `xaw chat` interactive terminal UI.
-- `xaw run -p` headless mode.
+- `cat-agentic chat` interactive terminal UI.
+- `cat-agentic run -p` headless mode.
 - Anthropic provider and OpenAI-compatible provider.
 - BYOK via environment variables; config stores only provider metadata.
 - Sandboxed file, search, and command tools.
 - User approval before command execution.
 - Session save/resume.
 - Skills, hooks, MCP, and multi-agent extension points.
-- Textual full-screen terminal UI behind `xaw tui`.
+- Textual full-screen terminal UI behind `cat-agentic tui`.
 
 ## Later scope
 

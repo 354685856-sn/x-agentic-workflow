@@ -9,6 +9,7 @@ def test_tui_app_is_textual_app() -> None:
     from x_agentic_workflow.tui import XawTuiApp
 
     assert issubclass(XawTuiApp, App)
+    assert XawTuiApp.TITLE == "cat-agentic"
     assert "submit" in {binding.action for binding in XawTuiApp.BINDINGS}
     assert {"doctor", "approval_panel", "clear"}.issubset(
         {binding.action for binding in XawTuiApp.BINDINGS}

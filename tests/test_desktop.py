@@ -1,6 +1,8 @@
 import json
 import re
 import socket
+import subprocess
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -23,10 +25,13 @@ from x_agentic_workflow.types import AgentEvent, Message, ModelResponse, ToolSpe
 def test_desktop_html_contains_clean_room_app_shell() -> None:
     html = render_desktop_html()
 
+    assert "cat-agentic" in html
+    assert "cat-agenic" not in html
     assert "x-agentic-workflow" in html
     assert "新建会话" in html
-    assert "navSettings" in html
+    assert "navSettings" not in html
     assert "已安排" not in html
+    assert "定时任务" in html
     assert "插件" not in html
     assert "navSearch" not in html
     assert "navScheduled" not in html
@@ -44,6 +49,13 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "Diff" in html
     assert "latestDiff" in html
     assert "fileChanges" in html
+    assert "workspaceStatus" in html
+    assert "workspaceSummary" in html
+    assert "renderWorkspaceStatus" in html
+    assert "worktreeList" in html
+    assert "createWorktree" in html
+    assert "/api/worktree/create" in html
+    assert "data-worktree-path" in html
     assert "selectedDiff" in html
     assert "selectedDiffIndex" in html
     assert "/api/diff/select" in html
@@ -53,6 +65,9 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "开始一个新的编码会话" in html
     assert "Overview" not in html
     assert "/api/ask" in html
+    assert "/api/scheduled" in html
+    assert "/api/scheduled/create" in html
+    assert "/api/scheduled/delete" in html
     assert "验证项目" in html
     assert "验证中..." in html
     assert "切换项目" in html
@@ -61,8 +76,19 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "projectPathInput" in html
     assert "recentProjects" in html
     assert "sessionSearch" in html
+    assert "githubBtn" in html
+    assert "sidebarToggle" in html
+    assert "scheduledBtn" in html
+    assert "scheduledTab" in html
+    assert "scheduledScreen" in html
+    assert "createScheduledTask" in html
+    assert "scheduledList" in html
+    assert "refreshSessions" in html
+    assert "clearSessionSearch" in html
+    assert "sidebar-collapsed" in html
     assert "sessionDetails" in html
     assert "sessionTitle" in html
+    assert "projectTopTab" in html
     assert "已恢复会话" in html
     assert "renderSessions" in html
     assert "attachButton" in html
@@ -94,6 +120,7 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "localStorage.removeItem(currentDraftKey)" in html
     assert "JSON.stringify(pendingAttachments)" not in html
     assert "Token 用量" not in html
+    assert html.index('class="composer-actions"') < html.index('class="project-picker"')
 
 
 def test_desktop_records_write_file_ledger_and_latest_diff(tmp_path: Path) -> None:
@@ -130,6 +157,100 @@ def test_desktop_records_write_file_ledger_and_latest_diff(tmp_path: Path) -> No
         app.sessions.path_for(app.agent.session_id).read_text(encoding="utf-8")
     )
     assert session_data["file_changes"][0]["path"] == "README.md"
+
+
+def test_desktop_workspace_status_reads_git_branch_changes_and_diff(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "xaw@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "XAW"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    status = app.state()["workspaceStatus"]
+
+    assert status["isGit"] is True
+    assert status["branch"] == "main"
+    assert status["worktree"] == str(tmp_path)
+    assert status["changes"] == [{"status": "M", "path": "README.md"}]
+    assert "+changed" in status["diff"]
+    assert status["worktrees"][0]["path"] == str(tmp_path)
+    assert status["worktrees"][0]["branch"] == "main"
+    assert status["worktrees"][0]["current"] is True
+
+
+def test_desktop_workspace_status_handles_non_git_directory(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    status = app.state()["workspaceStatus"]
+
+    assert status["isGit"] is False
+    assert status["changes"] == []
+    assert "不是 Git 仓库" in status["summary"]
+
+
+def test_desktop_creates_and_lists_git_worktree(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "xaw@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "XAW"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
+    target = tmp_path.parent / f"{tmp_path.name}-feature-worktree"
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.create_worktree({"branch": "feature/right-panel", "path": str(target)})
+
+    assert state["worktreeCreate"]["ok"] is True
+    assert target.exists()
+    created = next(
+        item for item in state["workspaceStatus"]["worktrees"] if item["path"] == str(target)
+    )
+    assert created["branch"] == "feature/right-panel"
+    assert created["current"] is False
+
+
+def test_desktop_rejects_invalid_worktree_request(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.create_worktree({"branch": "feature/test", "path": str(tmp_path / "target")})
+
+    assert state["worktreeCreate"]["ok"] is False
+    assert "不是 Git 仓库" in state["worktreeCreate"]["message"]
 
 
 def test_desktop_restores_file_ledger_when_opening_session(tmp_path: Path) -> None:
@@ -205,6 +326,142 @@ def test_desktop_session_details_include_titles_and_counts(tmp_path: Path) -> No
     assert detail["fileChangeCount"] == 1
     assert state["sessionRestored"] is False
     assert state["sessionTitle"] == "新建会话"
+
+
+def test_desktop_scheduled_state_is_real_empty_list(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+    state = app.state()
+
+    assert state["scheduledTasks"] == []
+    assert "暂无定时任务" in state["scheduledSummary"]
+
+
+def test_desktop_scheduled_tasks_are_persisted_and_deleted(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    created = app.create_scheduled_task(
+        {
+            "title": "每日项目验证",
+            "schedule": "每天 09:00",
+            "prompt": "验证项目并汇报失败项",
+        }
+    )
+
+    assert created["scheduledResult"]["ok"] is True
+    assert created["scheduledTasks"][0]["title"] == "每日项目验证"
+    assert created["scheduledTasks"][0]["projectPath"] == str(tmp_path)
+    assert created["scheduledTasks"][0]["status"] == "scheduled"
+    assert created["scheduledTasks"][0]["nextRunAt"]
+    assert created["scheduledTasks"][0]["runs"] == []
+    assert (tmp_path / "scheduled-tasks.json").exists()
+
+    reloaded = DesktopApp(config)
+    state = reloaded.state()
+    assert state["scheduledTasks"][0]["prompt"] == "验证项目并汇报失败项"
+    assert "已保存 1 个" in state["scheduledSummary"]
+    assert "自动检查执行" in state["scheduledSummary"]
+
+    deleted = reloaded.delete_scheduled_task({"id": state["scheduledTasks"][0]["id"]})
+    assert deleted["scheduledResult"]["ok"] is True
+    assert deleted["scheduledTasks"] == []
+
+
+def test_desktop_rejects_incomplete_scheduled_tasks(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.create_scheduled_task({"title": "缺少提示词", "schedule": "每天 09:00"})
+
+    assert state["scheduledResult"]["ok"] is False
+    assert state["scheduledTasks"] == []
+
+
+def test_desktop_rejects_unsupported_scheduled_task_time(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.create_scheduled_task(
+        {"title": "自由格式", "schedule": "明天早上", "prompt": "验证项目"}
+    )
+
+    assert state["scheduledResult"]["ok"] is False
+    assert "暂不支持" in state["scheduledResult"]["message"]
+    assert state["scheduledTasks"] == []
+
+
+def test_desktop_runs_due_scheduled_tasks_and_records_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ScheduledProvider:
+        def complete(self, messages: list[Message], tools: list[ToolSpec]) -> ModelResponse:
+            del tools
+            assert messages[-1].content == "验证项目并汇报失败项"
+            return ModelResponse(text="项目验证完成。")
+
+    monkeypatch.setattr(
+        "x_agentic_workflow.agent.build_provider",
+        lambda _config: ScheduledProvider(),
+    )
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+    created = app.create_scheduled_task(
+        {
+            "title": "每分钟检查",
+            "schedule": "每 30 分钟",
+            "prompt": "验证项目并汇报失败项",
+        }
+    )
+    task = created["scheduledTasks"][0]
+    task["nextRunAt"] = "2026-07-04T01:00:00+00:00"
+    app._save_scheduled_tasks([task])
+
+    executed = app._run_due_scheduled_tasks(datetime.fromisoformat("2026-07-04T01:01:00+00:00"))
+    state = app.state()
+    updated = state["scheduledTasks"][0]
+
+    assert executed[0]["ok"] is True
+    assert updated["status"] == "last-ok"
+    assert updated["lastRunAt"] == "2026-07-04T01:01:00+00:00"
+    assert updated["nextRunAt"] == "2026-07-04T01:31:00+00:00"
+    assert updated["runs"][0]["summary"] == "项目验证完成。"
 
 
 def test_desktop_session_details_use_stable_updated_labels_and_order(tmp_path: Path) -> None:
@@ -407,18 +664,19 @@ def test_desktop_clears_file_ledger_on_new_chat_and_project_switch(tmp_path: Pat
     assert switched["latestDiff"] is None
 
 
-def test_desktop_composer_actions_are_outside_prompt_box() -> None:
+def test_desktop_composer_actions_are_inside_prompt_card() -> None:
     html = render_desktop_html()
 
     composer_match = re.search(
-        r'<div class="composer">(?P<body>.*?)</div>\s*<div class="composer-actions">',
+        r'<div class="composer">(?P<body>.*?)<div class="project-picker">',
         html,
         re.DOTALL,
     )
 
     assert composer_match is not None
-    assert "composer-actions" not in composer_match.group("body")
-    assert "right-tools" not in composer_match.group("body")
+    assert "composer-actions" in composer_match.group("body")
+    assert "right-tools" in composer_match.group("body")
+    assert "attachButton" in composer_match.group("body")
 
 
 def test_desktop_composer_dock_is_bottom_aligned() -> None:
@@ -431,9 +689,8 @@ def test_desktop_composer_dock_is_bottom_aligned() -> None:
         "min-width: 0; min-height: 0; height: 100vh;"
     ) in html
     assert ".stage { flex: 1; min-height: 0; display: flex; align-items: stretch;" in html
-    assert "padding: 0 40px 8px" in html
-    assert ".hero { width: min(980px, 100%); height: 100%; min-height: 0;" in html
-    assert ".composer-dock { width: min(1064px, 100%); margin: auto auto 0;" in html
+    assert ".hero { width: min(1120px, 100%);" in html
+    assert ".composer-dock { width: min(1068px, 100%); margin: 0 auto 0;" in html
 
 
 def test_desktop_provider_settings_save_without_secret_value(tmp_path: Path) -> None:
