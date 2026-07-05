@@ -3,7 +3,7 @@
 This repository includes a clean-room local macOS app launcher:
 
 ```text
-apps/macos/X Agentic Workflow.app
+apps/macos/Cat Agentic.app
 ```
 
 After cloning or downloading the repository on macOS, a user can double-click
@@ -29,7 +29,7 @@ xaw desktop --host 127.0.0.1 --port 8765
 Runtime logs are written to:
 
 ```text
-~/Library/Logs/x-agentic-workflow/desktop-app.log
+~/Library/Logs/cat-agentic/desktop-app.log
 ```
 
 ## Customer notes

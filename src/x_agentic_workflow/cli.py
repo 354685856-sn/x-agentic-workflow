@@ -18,7 +18,7 @@ from .tools import tool_specs
 from .types import Message
 from .ui import assistant, console, error
 
-app = typer.Typer(help="x-agentic-workflow terminal agent")
+app = typer.Typer(help="cat-agentic terminal agent")
 
 
 @app.callback(invoke_without_command=True)

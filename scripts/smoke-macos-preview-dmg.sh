@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DMG="${1:-}"
-LOG_FILE="$HOME/Library/Logs/x-agentic-workflow/desktop-app.log"
+LOG_FILE="$HOME/Library/Logs/cat-agentic/desktop-app.log"
 
 if [[ -z "$DMG" ]]; then
   DMG="$(ls -t "$ROOT"/dist/*-macos-preview.dmg | head -1)"
@@ -44,7 +44,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-app="$volume/X Agentic Workflow.app"
+app="$volume/Cat Agentic.app"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 test -d "$app/Contents/Resources/source/src/x_agentic_workflow"
 open "$app"
@@ -54,7 +54,7 @@ deadline=$((SECONDS + 120))
 while [[ "$SECONDS" -lt "$deadline" ]]; do
   if [[ -f "$LOG_FILE" ]]; then
     url="$(tail -c +"$((before_size + 1))" "$LOG_FILE" 2>/dev/null \
-      | python3 -c 'import re,sys; text=sys.stdin.read(); urls=re.findall(r"x-agentic-workflow desktop UI running at (http://127\.0\.0\.1:\d+)", text); print(urls[-1] if urls else "")')"
+      | python3 -c 'import re,sys; text=sys.stdin.read(); urls=re.findall(r"cat-agentic desktop UI running at (http://127\.0\.0\.1:\d+)", text); print(urls[-1] if urls else "")')"
   fi
   if [[ -n "$url" ]]; then
     python3 - "$url" <<'PY'

@@ -1,4 +1,4 @@
-"""Full-screen hybrid Textual interface for x-agentic-workflow."""
+"""Full-screen hybrid Textual interface for cat-agentic."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class TuiPanelState:
 class XawTuiApp(App[None]):
     """Hybrid terminal app with chat, status, tools, sessions, and approval panels."""
 
-    TITLE = "x-agentic-workflow"
+    TITLE = "cat-agentic"
     SUB_TITLE = "hybrid terminal agent workspace"
 
     CSS = """
@@ -143,7 +143,7 @@ class XawTuiApp(App[None]):
             with Vertical(id="center"):
                 yield RichLog(id="transcript", wrap=True, markup=True)
                 with Horizontal(id="composer"):
-                    yield Input(placeholder="Ask x-agentic-workflow…", id="prompt")
+                    yield Input(placeholder="Ask cat-agentic…", id="prompt")
                     yield Button("Send", id="send", variant="primary")
             with Vertical(id="right-rail"):
                 yield Static("", id="timeline-panel", classes="panel")
@@ -155,7 +155,7 @@ class XawTuiApp(App[None]):
     def on_mount(self) -> None:
         self._refresh_panels()
         transcript = self.query_one("#transcript", RichLog)
-        transcript.write("[bold blue]x-agentic-workflow[/bold blue] hybrid TUI ready")
+        transcript.write("[bold blue]cat-agentic[/bold blue] hybrid TUI ready")
         transcript.write(f"[dim]session {self.agent.session_id} · mode {self.mode}[/dim]")
         self.query_one("#prompt", Input).focus()
 

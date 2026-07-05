@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="X Agentic Workflow"
+APP_NAME="Cat Agentic"
 VERSION="$("$ROOT/.venv/bin/python" -c 'import x_agentic_workflow; print(x_agentic_workflow.__version__)' 2>/dev/null || ROOT="$ROOT" python3 -c 'import os, tomllib, pathlib; print(tomllib.loads((pathlib.Path(os.environ["ROOT"]) / "pyproject.toml").read_text())["project"]["version"])')"
 BUILD_ROOT="$ROOT/build/macos-preview"
 APP_TEMPLATE="$ROOT/apps/macos/${APP_NAME}.app"
@@ -15,8 +15,8 @@ rm -rf "$BUILD_ROOT"
 mkdir -p "$SOURCE_DIR" "$DMG_DIR" "$ROOT/dist"
 
 ditto "$APP_TEMPLATE" "$DIST_APP"
-install -m 755 "$ROOT/packaging/macos/x-agentic-workflow-distribution-launcher.zsh" \
-  "$DIST_APP/Contents/MacOS/x-agentic-workflow"
+install -m 755 "$ROOT/packaging/macos/cat-agentic-distribution-launcher.zsh" \
+  "$DIST_APP/Contents/MacOS/cat-agentic"
 
 rsync -a \
   --exclude ".git" \
