@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from .agent import Agent
 from .config import ProviderConfig, RuntimeConfig
 from .mcp import McpRegistry
+from .multi_agent import DEFAULT_ROLES
 from .sessions import SessionStore
 from .skills import SkillRegistry
 from .types import AgentEvent, Message
@@ -141,6 +142,7 @@ class DesktopApp:
             "workspaceStatus": _workspace_status(self.config.workdir),
             "h5Access": self._h5_access_state(),
             "mcpSettings": self._mcp_settings_state(),
+            "agentsSettings": self._agents_settings_state(),
             "skillsSettings": self._skills_settings_state(),
             "memorySettings": self._memory_settings_state(),
             "generalSettings": {
@@ -847,6 +849,30 @@ class DesktopApp:
             "remote": remote,
         }
 
+    def _agents_settings_state(self) -> dict[str, Any]:
+        roles = [
+            {
+                "name": role.name,
+                "instructions": role.instructions,
+                "source": "内置",
+                "status": "已生效",
+                "model": "继承默认模型",
+                "tools": "继承当前工具集",
+            }
+            for role in DEFAULT_ROLES
+        ]
+        prompt_chars = len("\n".join(f"{role.name}: {role.instructions}" for role in DEFAULT_ROLES))
+        return {
+            "ok": True,
+            "error": "",
+            "roles": roles,
+            "total": len(roles),
+            "enabled": len(roles),
+            "sources": 1 if roles else 0,
+            "promptChars": prompt_chars,
+            "mode": "系统提示注入",
+        }
+
     def _skills_settings_state(self) -> dict[str, Any]:
         registry = SkillRegistry(self.config.skills_dir)
         try:
@@ -970,6 +996,9 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
                 return
             if request_path == "/api/mcp":
                 self._send_json(app.state()["mcpSettings"])
+                return
+            if request_path == "/api/agents":
+                self._send_json(app.state()["agentsSettings"])
                 return
             if request_path == "/api/skills":
                 self._send_json(app.state()["skillsSettings"])
@@ -1886,6 +1915,22 @@ def render_desktop_html() -> str:
     .mcp-server-name { color: #202633; font-size: 18px; font-weight: 800; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .mcp-server-meta { color: #7a8798; font-size: 14px; line-height: 1.45; word-break: break-word; }
     .mcp-empty { border: 1px dashed #d8e0ea; border-radius: 8px; color: #7a8798; padding: 22px; background: #fbfcfe; }
+    .agents-hero {
+      border: 1px solid #dfe6ef; border-radius: 8px; background: #fbfcfe; padding: 22px 26px;
+      display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 128px); gap: 18px; align-items: center;
+    }
+    .agents-eyebrow { color: #8a96a5; font-size: 12px; font-weight: 820; letter-spacing: .18em; text-transform: uppercase; }
+    .agents-hero-title { margin-top: 8px; color: #202633; font-size: 24px; font-weight: 840; }
+    .agents-hero-copy { margin-top: 10px; color: #627083; font-size: 15px; line-height: 1.55; }
+    .agent-list { border: 1px solid #dfe6ef; border-radius: 8px; background: white; overflow: hidden; }
+    .agent-card { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 14px; padding: 18px 20px; border-bottom: 1px solid #e7edf4; align-items: start; }
+    .agent-card:last-child { border-bottom: 0; }
+    .agent-icon { color: #7a8798; font-size: 22px; line-height: 1; }
+    .agent-name-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .agent-name { color: #202633; font-size: 18px; font-weight: 820; }
+    .agent-instructions { margin-top: 8px; color: #536172; font-size: 14px; line-height: 1.5; }
+    .agent-meta { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; color: #7a8798; font-size: 13px; }
+    .agent-arrow { color: #a0a8b4; font-size: 24px; line-height: 1; padding-top: 4px; }
     .skills-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; }
     .skills-search {
       height: 44px; border: 1px solid #d9e1ec; border-radius: 8px; padding: 0 14px;
@@ -2376,7 +2421,7 @@ def render_desktop_html() -> str:
               <button class="pending" disabled><span>▰</span><span class="settings-nav-label">IM 接入</span><span class="settings-nav-status">后续</span></button>
               <button class="pending" disabled><span>▣</span><span class="settings-nav-label">终端</span><span class="settings-nav-status">后续</span></button>
               <button data-settings-view="mcp"><span>▤</span><span class="settings-nav-label">MCP</span></button>
-              <button class="pending" disabled><span>▦</span><span class="settings-nav-label">Agents</span><span class="settings-nav-status">后续</span></button>
+              <button data-settings-view="agents"><span>▦</span><span class="settings-nav-label">Agents</span></button>
               <button data-settings-view="skills"><span>✦</span><span class="settings-nav-label">技能</span></button>
               <button data-settings-view="memory"><span>▧</span><span class="settings-nav-label">记忆</span></button>
               <button class="pending" disabled><span>⌘</span><span class="settings-nav-label">插件</span><span class="settings-nav-status">后续</span></button>
@@ -2557,6 +2602,34 @@ def render_desktop_html() -> str:
                 <section class="general-section">
                   <h3>已配置服务</h3>
                   <div class="mcp-list" id="mcpServerList"></div>
+                </section>
+              </div>
+            </div>
+            <div class="settings-panel" id="agentsSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">Agents</div>
+                  <div class="settings-subtitle">浏览当前会注入系统提示的本地 Agent 角色。</div>
+                </div>
+                <button class="secondary-btn" id="refreshAgentsSettings">刷新</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <div class="agents-hero">
+                    <div>
+                      <div class="agents-eyebrow">AGENT 浏览器</div>
+                      <div class="agents-hero-title">浏览已启用 Agents</div>
+                      <div class="agents-hero-copy">这些角色来自本地 `multi_agent` 运行时，当前用于任务分解提示。第一版只展示和注入，不启动独立子进程。</div>
+                    </div>
+                    <div class="mcp-stat"><span>Agent</span><strong id="agentsTotal">0</strong></div>
+                    <div class="mcp-stat"><span>生效中</span><strong id="agentsEnabled">0</strong></div>
+                    <div class="mcp-stat"><span>来源</span><strong id="agentsSources">0</strong></div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>角色列表</h3>
+                  <p id="agentsResult">正在读取本地 Agents。</p>
+                  <div class="agent-list" id="agentsList"></div>
                 </section>
               </div>
             </div>
@@ -2750,6 +2823,7 @@ def render_desktop_html() -> str:
       renderGeneralSettings(state);
       renderH5Settings(state);
       renderMcpSettings(state.mcpSettings || {});
+      renderAgentsSettings(state.agentsSettings || {});
       renderSkillsSettings(state.skillsSettings || {});
       renderMemorySettings(state.memorySettings || {});
       if (state.providerSave) showProviderResult(state.providerSave);
@@ -2991,6 +3065,47 @@ def render_desktop_html() -> str:
       button.textContent = '刷新中...';
       try {
         renderMcpSettings(await api('/api/mcp'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderAgentsSettings(agentsState) {
+      const roles = agentsState.roles || [];
+      $('agentsTotal').textContent = String(agentsState.total || 0);
+      $('agentsEnabled').textContent = String(agentsState.enabled || 0);
+      $('agentsSources').textContent = String(agentsState.sources || 0);
+      const result = $('agentsResult');
+      if (agentsState.ok === false) {
+        result.textContent = `Agents 读取失败：${agentsState.error || '未知错误'}`;
+        result.classList.add('bad');
+        result.classList.remove('ok');
+      } else {
+        result.textContent = `当前模式：${agentsState.mode || '本地角色提示'}。这些角色会随系统提示进入 Agent 上下文。`;
+        result.classList.add('ok');
+        result.classList.remove('bad');
+      }
+      const list = $('agentsList');
+      if (!roles.length) {
+        list.innerHTML = '<div class="mcp-empty">暂无已启用 Agent 角色。</div>';
+        return;
+      }
+      list.innerHTML = roles.map(role => `<div class="agent-card">
+        <div class="agent-icon">▦</div>
+        <div>
+          <div class="agent-name-row"><span class="agent-name">${escapeHtml(role.name || 'unnamed')}</span><span class="badge">${escapeHtml(role.status || '已生效')}</span><span class="badge">${escapeHtml(role.source || '本地')}</span></div>
+          <div class="agent-instructions">${escapeHtml(role.instructions || '')}</div>
+          <div class="agent-meta"><span>${escapeHtml(role.model || '继承默认模型')}</span><span>${escapeHtml(role.tools || '继承当前工具集')}</span></div>
+        </div>
+        <div class="agent-arrow">›</div>
+      </div>`).join('');
+    }
+    async function refreshAgentsSettings() {
+      const button = $('refreshAgentsSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderAgentsSettings(await api('/api/agents'));
       } finally {
         button.disabled = false;
         button.textContent = '刷新';
@@ -3437,6 +3552,7 @@ def render_desktop_html() -> str:
         $('generalSettingsPanel').classList.toggle('active', view === 'general');
         $('h5SettingsPanel').classList.toggle('active', view === 'h5');
         $('mcpSettingsPanel').classList.toggle('active', view === 'mcp');
+        $('agentsSettingsPanel').classList.toggle('active', view === 'agents');
         $('skillsSettingsPanel').classList.toggle('active', view === 'skills');
         $('memorySettingsPanel').classList.toggle('active', view === 'memory');
         if (view === 'memory' && selectedMemoryId) selectMemory(selectedMemoryId);
@@ -3454,6 +3570,7 @@ def render_desktop_html() -> str:
     $('saveGeneralSettings').onclick = saveGeneralSettings;
     $('saveH5Settings').onclick = saveH5Settings;
     $('refreshMcpSettings').onclick = refreshMcpSettings;
+    $('refreshAgentsSettings').onclick = refreshAgentsSettings;
     $('refreshSkillsSettings').onclick = refreshSkillsSettings;
     $('refreshMemorySettings').onclick = refreshMemorySettings;
     $('skillsSearch').addEventListener('input', async () => {

@@ -72,12 +72,14 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "/api/settings/general" in html
     assert "/api/settings/h5" in html
     assert "/api/mcp" in html
+    assert "/api/agents" in html
     assert "/api/skills" in html
     assert "/api/memory" in html
     assert "/api/memory/preview" in html
     assert 'data-settings-view="general"' in html
     assert 'data-settings-view="h5"' in html
     assert 'data-settings-view="mcp"' in html
+    assert 'data-settings-view="agents"' in html
     assert 'data-settings-view="skills"' in html
     assert 'data-settings-view="memory"' in html
     assert 'id="h5SettingsPanel"' in html
@@ -86,6 +88,9 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert 'id="mcpSettingsPanel"' in html
     assert 'id="refreshMcpSettings"' in html
     assert "MCP 配置文件" in html
+    assert 'id="agentsSettingsPanel"' in html
+    assert 'id="refreshAgentsSettings"' in html
+    assert "AGENT 浏览器" in html
     assert 'id="skillsSettingsPanel"' in html
     assert 'id="refreshSkillsSettings"' in html
     assert 'id="skillsSearch"' in html
@@ -945,6 +950,31 @@ def test_desktop_mcp_settings_reports_invalid_config(tmp_path: Path) -> None:
     assert mcp["ok"] is False
     assert mcp["exists"] is True
     assert mcp["servers"] == []
+
+
+def test_desktop_agents_settings_reports_builtin_roles(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    agents = app.state()["agentsSettings"]
+
+    assert agents["ok"] is True
+    assert agents["mode"] == "系统提示注入"
+    assert agents["total"] == 3
+    assert agents["enabled"] == 3
+    assert [role["name"] for role in agents["roles"]] == [
+        "architect",
+        "implementer",
+        "reviewer",
+    ]
+    assert all(role["status"] == "已生效" for role in agents["roles"])
 
 
 def test_desktop_skills_settings_read_local_skill_summaries(tmp_path: Path) -> None:
