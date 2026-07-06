@@ -125,6 +125,12 @@ class DesktopApp:
             "scheduledTasks": self._load_scheduled_tasks(),
             "scheduledSummary": self._scheduled_summary(),
             "workspaceStatus": _workspace_status(self.config.workdir),
+            "generalSettings": {
+                "requireCommandApproval": self.config.require_command_approval,
+                "sendMode": self.config.desktop_send_mode,
+                "uiScale": self.config.desktop_ui_scale,
+                "notificationsEnabled": self.config.desktop_notifications_enabled,
+            },
         }
 
     def new_chat(self) -> dict[str, Any]:
@@ -206,6 +212,37 @@ class DesktopApp:
                 "ok": True,
                 "message": f"Saved provider settings to {self.config.config_file}. Secret value was not stored.",
             },
+        }
+
+    def save_general_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        approval = payload.get("requireCommandApproval")
+        notifications = payload.get("notificationsEnabled")
+        send_mode = payload.get("sendMode")
+        ui_scale = payload.get("uiScale")
+        if not isinstance(approval, bool) or not isinstance(notifications, bool):
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "开关设置格式无效。"},
+            }
+        if send_mode not in {"enter", "modifier-enter"}:
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "消息发送方式无效。"},
+            }
+        if isinstance(ui_scale, bool) or not isinstance(ui_scale, int) or not 50 <= ui_scale <= 200:
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "界面缩放必须在 50% 到 200% 之间。"},
+            }
+        self.config.require_command_approval = approval
+        self.config.desktop_send_mode = send_mode
+        self.config.desktop_ui_scale = ui_scale
+        self.config.desktop_notifications_enabled = notifications
+        self.config.save()
+        self.agent = self._new_agent(session_id=self.agent.session_id)
+        return {
+            **self.state(),
+            "generalSave": {"ok": True, "message": "通用设置已保存并生效。"},
         }
 
     def test_provider_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -719,6 +756,9 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/api/test-provider":
                 self._send_json(app.test_provider_settings(payload))
+                return
+            if self.path == "/api/settings/general":
+                self._send_json(app.save_general_settings(payload))
                 return
             if self.path == "/api/project/validate":
                 self._send_json(app.validate_project())
@@ -1406,7 +1446,11 @@ def render_desktop_html() -> str:
       padding: 12px 14px; font-size: 18px; display: flex; gap: 14px; align-items: center; cursor: pointer;
     }
     .settings-nav button.active { background: #e7edf5; color: #202633; font-weight: 780; }
-    .settings-panel { padding: 34px 44px; max-width: 1060px; }
+    .settings-nav button.pending { color: #a0a8b4; cursor: default; }
+    .settings-nav .settings-nav-label { flex: 1; }
+    .settings-nav .settings-nav-status { font-size: 11px; color: #a0a8b4; }
+    .settings-panel { display: none; padding: 34px 44px; max-width: 1060px; overflow: auto; }
+    .settings-panel.active { display: block; }
     .settings-head { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 28px; }
     .settings-title { font-size: 28px; font-weight: 820; color: #1e2632; }
     .settings-subtitle { margin-top: 8px; color: #7a8798; font-size: 18px; }
@@ -1442,8 +1486,48 @@ def render_desktop_html() -> str:
     .badge { font-size: 13px; padding: 3px 8px; border-radius: 7px; background: #edf2f7; color: #7b8795; font-weight: 760; }
     .badge.hot { background: #fff0e9; color: #cf5f35; }
     .settings-note { margin-top: 28px; color: #728094; line-height: 1.55; font-size: 15px; }
+    .general-sections { display: grid; gap: 30px; padding-bottom: 48px; }
+    .general-section { display: grid; gap: 10px; }
+    .general-section h3 { margin: 0; color: #202633; font-size: 20px; }
+    .general-section > p { margin: 0; color: #7a8798; font-size: 15px; line-height: 1.5; }
+    .setting-card {
+      border: 1px solid #dfe6ef; border-radius: 8px; padding: 16px 18px; background: #fbfcfe;
+      display: grid; gap: 12px;
+    }
+    .setting-row { display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+    .setting-copy { min-width: 0; }
+    .setting-name { color: #202633; font-size: 16px; font-weight: 740; }
+    .setting-help { margin-top: 4px; color: #7a8798; font-size: 13px; line-height: 1.45; }
+    .toggle-control { position: relative; width: 46px; height: 26px; flex: 0 0 auto; }
+    .toggle-control input { position: absolute; opacity: 0; pointer-events: none; }
+    .toggle-control span {
+      position: absolute; inset: 0; border-radius: 999px; background: #c7cdd5; cursor: pointer;
+      transition: background .16s ease;
+    }
+    .toggle-control span::after {
+      content: ""; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px;
+      border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2);
+      transition: transform .16s ease;
+    }
+    .toggle-control input:checked + span { background: #ad6048; }
+    .toggle-control input:checked + span::after { transform: translateX(20px); }
+    .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .segment-option {
+      border: 1px solid #d9e1ec; border-radius: 8px; background: #fff; color: #536172;
+      padding: 12px; text-align: left; cursor: pointer; font: inherit;
+    }
+    .segment-option.active { border-color: #ad6048; color: #202633; background: #fffaf7; }
+    .segment-option strong { display: block; font-size: 14px; }
+    .segment-option small { display: block; margin-top: 4px; color: #7a8798; }
+    .scale-row { display: grid; grid-template-columns: 1fr 72px; gap: 14px; align-items: center; }
+    .scale-row input[type="range"] { width: 100%; accent-color: #ad6048; }
+    .scale-value { text-align: center; color: #344054; font-weight: 720; }
+    .general-actions { display: flex; align-items: center; gap: 14px; }
     .app { grid-template-columns: 388px minmax(720px, 1fr) 360px; background: #fff; }
     .app.inspector-collapsed { grid-template-columns: 388px minmax(720px, 1fr) 56px; }
+    .app.settings-open { grid-template-columns: 388px minmax(0, 1fr) 0; }
+    .app.settings-open > .inspector { display: none; }
+    .app.settings-open .stage { padding-left: 0; padding-right: 0; }
     .app.sidebar-collapsed { grid-template-columns: 72px minmax(720px, 1fr) 360px; }
     .app.sidebar-collapsed .sidebar-chrome { grid-template-columns: 1fr; padding-left: 12px; padding-right: 12px; }
     .app.sidebar-collapsed .traffic,
@@ -1742,6 +1826,12 @@ def render_desktop_html() -> str:
       border: 1px solid #dbe3ee; background: #fff; color: #667085; border-radius: 10px;
       height: 34px; padding: 0 12px; cursor: pointer;
     }
+    @media (max-width: 1400px) {
+      .app.settings-open { grid-template-columns: 300px minmax(0, 1fr) 0; }
+      .app.settings-open .settings-layout { grid-template-columns: 210px minmax(0, 1fr); }
+      .app.settings-open .settings-nav button { padding: 0 18px; font-size: 15px; }
+      .app.settings-open .settings-panel { padding: 30px 26px; }
+    }
     @media (max-width: 860px) {
       .app { grid-template-columns: 1fr; }
       aside { display: none; }
@@ -1849,9 +1939,22 @@ def render_desktop_html() -> str:
         <div class="screen" id="settingsScreen">
             <div class="settings-layout">
             <div class="settings-nav">
-              <button class="active">▤ 服务商</button>
+              <button class="active" data-settings-view="provider"><span>▤</span><span class="settings-nav-label">服务商</span></button>
+              <button data-settings-view="general"><span>☷</span><span class="settings-nav-label">通用</span></button>
+              <button class="pending" disabled><span>⌗</span><span class="settings-nav-label">H5 访问</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>▰</span><span class="settings-nav-label">IM 接入</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>▣</span><span class="settings-nav-label">终端</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>▤</span><span class="settings-nav-label">MCP</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>▦</span><span class="settings-nav-label">Agents</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>✦</span><span class="settings-nav-label">技能</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>▧</span><span class="settings-nav-label">记忆</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>⌘</span><span class="settings-nav-label">插件</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>◉</span><span class="settings-nav-label">Computer Use</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>▥</span><span class="settings-nav-label">Token 用量</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>⌘</span><span class="settings-nav-label">Trace</span><span class="settings-nav-status">后续</span></button>
+              <button class="pending" disabled><span>≋</span><span class="settings-nav-label">诊断</span><span class="settings-nav-status">后续</span></button>
             </div>
-            <div class="settings-panel">
+            <div class="settings-panel active" id="providerSettingsPanel">
               <div class="settings-head">
                 <div>
                   <div class="settings-title">服务商</div>
@@ -1892,7 +1995,57 @@ def render_desktop_html() -> str:
                   <span></span>
                 </div>
               </div>
-              <div class="settings-note">Clean-room 交付原则：我们吸收公开产品体验与包交付结构，但 UI、代码、文案、图标、配置格式均由 XAW 自己实现。当前表单已接入 Provider Settings 保存和连接测试；后续补安全的 API key 存储。</div>
+              <div class="settings-note">密钥值不会写入配置文件。当前表单已接入服务商保存和连接测试；后续补安全的系统钥匙串存储。</div>
+            </div>
+            <div class="settings-panel" id="generalSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">通用</div>
+                  <div class="settings-subtitle">控制桌面端会话、输入和本机通知行为。</div>
+                </div>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <h3>命令审批</h3>
+                  <p>运行终端命令前是否必须获得确认。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">要求命令审批</div><div class="setting-help">关闭后，模型发起的命令可以直接运行。建议保持开启。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="requireCommandApproval" /><span></span></label>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>消息发送方式</h3>
+                  <p>选择输入框如何发送消息。</p>
+                  <div class="setting-card segmented" id="sendModeControl">
+                    <button class="segment-option" data-send-mode="enter"><strong>Enter 发送</strong><small>Shift+Enter 换行</small></button>
+                    <button class="segment-option" data-send-mode="modifier-enter"><strong>Ctrl/Cmd+Enter 发送</strong><small>Enter 换行</small></button>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>界面缩放</h3>
+                  <p>调整桌面界面的显示大小。</p>
+                  <div class="setting-card scale-row">
+                    <input type="range" id="uiScale" min="50" max="200" step="5" value="100" />
+                    <div class="scale-value" id="uiScaleValue">100%</div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>系统通知</h3>
+                  <p>任务完成后使用浏览器的系统通知能力提醒。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">启用系统通知</div><div class="setting-help">首次开启时浏览器会请求通知权限。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="notificationsEnabled" /><span></span></label>
+                    </div>
+                  </div>
+                </section>
+                <div class="general-actions">
+                  <button class="primary-btn" id="saveGeneralSettings">保存通用设置</button>
+                  <div class="settings-result" id="generalResult"></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1971,6 +2124,8 @@ def render_desktop_html() -> str:
     let providerFormDirty = false;
     let providerSubmitting = false;
     let currentDraftKey = '';
+    let desktopSendMode = 'modifier-enter';
+    let desktopNotificationsEnabled = false;
     async function api(path, body) {
       const res = await fetch(path, { method: body ? 'POST' : 'GET', headers: {'content-type': 'application/json'}, body: body ? JSON.stringify(body) : undefined });
       return await res.json();
@@ -1996,8 +2151,10 @@ def render_desktop_html() -> str:
       if (state.attachmentError) showAttachmentStatus(state.attachmentError.message);
       $('model').textContent = state.model;
       renderProviderState(state);
+      renderGeneralSettings(state);
       if (state.providerSave) showProviderResult(state.providerSave);
       if (state.providerTest) showProviderResult(state.providerTest);
+      if (state.generalSave) showGeneralResult(state.generalSave);
       renderProjectValidation(state.projectValidation);
       if (state.projectSwitch && !state.projectSwitch.ok) {
         renderProjectValidation({ok: false, summary: state.projectSwitch.message, checks: [], recommendations: []});
@@ -2110,6 +2267,54 @@ def render_desktop_html() -> str:
       box.textContent = result.message;
       box.classList.toggle('ok', !!result.ok);
       box.classList.toggle('bad', !result.ok);
+    }
+    function renderGeneralSettings(state) {
+      const settings = state.generalSettings || {};
+      desktopSendMode = settings.sendMode || 'modifier-enter';
+      desktopNotificationsEnabled = !!settings.notificationsEnabled;
+      $('requireCommandApproval').checked = settings.requireCommandApproval !== false;
+      $('notificationsEnabled').checked = desktopNotificationsEnabled;
+      $('uiScale').value = String(settings.uiScale || 100);
+      $('uiScaleValue').textContent = `${settings.uiScale || 100}%`;
+      document.documentElement.style.zoom = `${settings.uiScale || 100}%`;
+      document.querySelectorAll('[data-send-mode]').forEach(button => {
+        button.classList.toggle('active', button.dataset.sendMode === desktopSendMode);
+      });
+    }
+    function generalPayload() {
+      return {
+        requireCommandApproval: $('requireCommandApproval').checked,
+        sendMode: desktopSendMode,
+        uiScale: Number($('uiScale').value),
+        notificationsEnabled: $('notificationsEnabled').checked
+      };
+    }
+    function showGeneralResult(result) {
+      const box = $('generalResult');
+      box.textContent = result.message;
+      box.classList.toggle('ok', !!result.ok);
+      box.classList.toggle('bad', !result.ok);
+    }
+    async function saveGeneralSettings() {
+      const button = $('saveGeneralSettings');
+      button.disabled = true;
+      button.textContent = '保存中...';
+      try {
+        if ($('notificationsEnabled').checked && 'Notification' in window && Notification.permission === 'default') {
+          const permission = await Notification.requestPermission();
+          if (permission !== 'granted') $('notificationsEnabled').checked = false;
+        }
+        render(await api('/api/settings/general', generalPayload()));
+      } finally {
+        button.disabled = false;
+        button.textContent = '保存通用设置';
+      }
+    }
+    function showCompletionNotification(state) {
+      if (!desktopNotificationsEnabled || !('Notification' in window) || Notification.permission !== 'granted') return;
+      const lastMessage = (state.messages || []).at(-1);
+      const body = lastMessage && lastMessage.content ? lastMessage.content.slice(0, 120) : '任务已完成。';
+      new Notification('cat-agentic', {body});
     }
     function renderWorkspaceStatus(status) {
       const box = $('workspaceSummary');
@@ -2240,6 +2445,7 @@ def render_desktop_html() -> str:
       $('chatTab').classList.toggle('active', chat);
       $('settingsTab').classList.toggle('active', settings);
       $('scheduledTab').classList.toggle('active', scheduled);
+      document.querySelector('.app').classList.toggle('settings-open', settings);
     }
     function setNavActive(id) {
       document.querySelectorAll('.main-nav button').forEach(btn => btn.classList.toggle('active', btn.id === id));
@@ -2320,12 +2526,21 @@ def render_desktop_html() -> str:
         resetAttachments();
       }
       render(state);
+      showCompletionNotification(state);
     }
     $('send').onclick = send;
     $('attachButton').onclick = () => $('attachmentInput').click();
     $('attachmentInput').addEventListener('change', event => addAttachmentFiles(event.target.files));
     $('prompt').addEventListener('input', saveCurrentDraft);
-    $('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
+    $('prompt').addEventListener('keydown', e => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      const shouldSend = desktopSendMode === 'enter'
+        ? !e.shiftKey
+        : (e.metaKey || e.ctrlKey);
+      if (!shouldSend) return;
+      e.preventDefault();
+      send();
+    });
     $('newChat').onclick = async () => {
       saveCurrentDraft();
       resetAttachments();
@@ -2388,6 +2603,24 @@ def render_desktop_html() -> str:
     });
     $('saveProvider').onclick = () => runProviderAction('save');
     $('testProvider').onclick = () => runProviderAction('test');
+    document.querySelectorAll('[data-settings-view]').forEach(button => {
+      button.onclick = () => {
+        const provider = button.dataset.settingsView === 'provider';
+        document.querySelectorAll('[data-settings-view]').forEach(item => item.classList.toggle('active', item === button));
+        $('providerSettingsPanel').classList.toggle('active', provider);
+        $('generalSettingsPanel').classList.toggle('active', !provider);
+      };
+    });
+    document.querySelectorAll('[data-send-mode]').forEach(button => {
+      button.onclick = () => {
+        desktopSendMode = button.dataset.sendMode;
+        document.querySelectorAll('[data-send-mode]').forEach(item => item.classList.toggle('active', item === button));
+      };
+    });
+    $('uiScale').addEventListener('input', () => {
+      $('uiScaleValue').textContent = `${$('uiScale').value}%`;
+    });
+    $('saveGeneralSettings').onclick = saveGeneralSettings;
     async function switchProject(path) {
       const target = (path || $('projectPathInput').value).trim();
       const button = $('switchProject');

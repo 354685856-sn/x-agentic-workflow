@@ -32,7 +32,8 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "navSettings" not in html
     assert "已安排" not in html
     assert "定时任务" in html
-    assert "插件" not in html
+    assert '<span class="settings-nav-label">插件</span>' in html
+    assert 'class="pending" disabled' in html
     assert "navSearch" not in html
     assert "navScheduled" not in html
     assert "navPlugins" not in html
@@ -68,6 +69,12 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "/api/scheduled" in html
     assert "/api/scheduled/create" in html
     assert "/api/scheduled/delete" in html
+    assert "/api/settings/general" in html
+    assert 'data-settings-view="general"' in html
+    assert 'id="requireCommandApproval"' in html
+    assert 'id="notificationsEnabled"' in html
+    assert 'id="uiScale"' in html
+    assert 'data-send-mode="enter"' in html
     assert "验证项目" in html
     assert "验证中..." in html
     assert "切换项目" in html
@@ -119,7 +126,7 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "localStorage.setItem(currentDraftKey, draft)" in html
     assert "localStorage.removeItem(currentDraftKey)" in html
     assert "JSON.stringify(pendingAttachments)" not in html
-    assert "Token 用量" not in html
+    assert '<span class="settings-nav-label">Token 用量</span>' in html
     assert html.index('class="composer-actions"') < html.index('class="project-picker"')
 
 
@@ -718,6 +725,73 @@ def test_desktop_provider_settings_save_without_secret_value(tmp_path: Path) -> 
     assert '"api_key_env": "DEEPSEEK_API_KEY"' in saved
     assert "deepseek-chat" in saved
     assert "sk-" not in saved
+
+
+def test_desktop_general_settings_are_validated_and_persisted(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.json"
+    config = RuntimeConfig(
+        config_file=config_file,
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.save_general_settings(
+        {
+            "requireCommandApproval": False,
+            "sendMode": "enter",
+            "uiScale": 125,
+            "notificationsEnabled": True,
+        }
+    )
+
+    assert state["generalSave"]["ok"] is True
+    assert state["generalSettings"] == {
+        "requireCommandApproval": False,
+        "sendMode": "enter",
+        "uiScale": 125,
+        "notificationsEnabled": True,
+    }
+    reloaded = RuntimeConfig.load(config_file=config_file, workdir=tmp_path)
+    assert reloaded.require_command_approval is False
+    assert reloaded.desktop_send_mode == "enter"
+    assert reloaded.desktop_ui_scale == 125
+    assert reloaded.desktop_notifications_enabled is True
+
+
+def test_desktop_general_settings_reject_invalid_payload(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    invalid_mode = app.save_general_settings(
+        {
+            "requireCommandApproval": True,
+            "sendMode": "space",
+            "uiScale": 100,
+            "notificationsEnabled": False,
+        }
+    )
+    invalid_scale = app.save_general_settings(
+        {
+            "requireCommandApproval": True,
+            "sendMode": "modifier-enter",
+            "uiScale": 250,
+            "notificationsEnabled": False,
+        }
+    )
+
+    assert invalid_mode["generalSave"]["ok"] is False
+    assert invalid_scale["generalSave"]["ok"] is False
 
 
 def test_desktop_provider_connection_error_redacts_secret(

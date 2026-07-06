@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 ProviderName = Literal["anthropic", "openai-compatible"]
 
@@ -50,6 +50,9 @@ class RuntimeConfig:
     hooks_dir: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR / "hooks")
     mcp_config_file: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR / "mcp.json")
     recent_projects: list[str] = field(default_factory=list)
+    desktop_send_mode: Literal["enter", "modifier-enter"] = "modifier-enter"
+    desktop_ui_scale: int = 100
+    desktop_notifications_enabled: bool = False
 
     @property
     def api_key(self) -> str:
@@ -91,6 +94,16 @@ class RuntimeConfig:
                 for raw in data.get("recent_projects", [])
                 if isinstance(raw, str) and raw.strip()
             ][:8],
+            desktop_send_mode=cast(
+                Literal["enter", "modifier-enter"],
+                data.get("desktop_send_mode")
+                if data.get("desktop_send_mode") in {"enter", "modifier-enter"}
+                else "modifier-enter",
+            ),
+            desktop_ui_scale=max(50, min(200, int(data.get("desktop_ui_scale", 100)))),
+            desktop_notifications_enabled=bool(
+                data.get("desktop_notifications_enabled", False)
+            ),
         )
 
     def validate_for_model_call(self) -> None:
@@ -115,5 +128,8 @@ class RuntimeConfig:
             "max_output_chars": self.max_output_chars,
             "require_command_approval": self.require_command_approval,
             "recent_projects": self.recent_projects[:8],
+            "desktop_send_mode": self.desktop_send_mode,
+            "desktop_ui_scale": self.desktop_ui_scale,
+            "desktop_notifications_enabled": self.desktop_notifications_enabled,
         }
         self.config_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
