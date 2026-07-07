@@ -36,7 +36,7 @@ def build_provider(config: RuntimeConfig) -> ModelProvider:
 class AnthropicProvider(ModelProvider):
     def __init__(self, config: RuntimeConfig) -> None:
         self.config = config
-        self.client = Anthropic(api_key=config.api_key)
+        self.client = Anthropic(api_key=config.api_key, timeout=config.ai_request_timeout_seconds)
 
     def complete(self, messages: list[Message], tools: list[ToolSpec]) -> ModelResponse:
         system = "\n\n".join(m.content for m in messages if m.role == "system")
@@ -71,7 +71,10 @@ class AnthropicProvider(ModelProvider):
 class OpenAICompatibleProvider(ModelProvider):
     def __init__(self, config: RuntimeConfig) -> None:
         self.config = config
-        kwargs: dict[str, Any] = {"api_key": config.api_key}
+        kwargs: dict[str, Any] = {
+            "api_key": config.api_key,
+            "timeout": config.ai_request_timeout_seconds,
+        }
         if config.provider.base_url:
             kwargs["base_url"] = config.provider.base_url
         self.client = OpenAI(**kwargs)

@@ -115,6 +115,19 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert 'id="notificationsEnabled"' in html
     assert 'id="uiScale"' in html
     assert 'data-send-mode="enter"' in html
+    assert 'data-theme="pure"' in html
+    assert 'id="replyLanguage"' in html
+    assert 'data-output-style="review"' in html
+    assert 'data-permission-mode="skip"' in html
+    assert 'id="thinkingEnabled"' in html
+    assert 'id="autoMemoryEnabled"' in html
+    assert 'id="traceEnabled"' in html
+    assert 'data-network-mode="manual"' in html
+    assert 'id="aiRequestTimeoutSeconds"' in html
+    assert 'id="webfetchPreflightSkip"' in html
+    assert 'data-web-search-provider="tavily"' in html
+    assert 'id="tavilyApiKeyEnv"' in html
+    assert 'data-data-dir-mode="portable"' in html
     assert "验证项目" in html
     assert "验证中..." in html
     assert "切换项目" in html
@@ -907,25 +920,64 @@ def test_desktop_general_settings_are_validated_and_persisted(tmp_path: Path) ->
 
     state = app.save_general_settings(
         {
+            "theme": "classic",
+            "language": "zh-CN",
+            "replyLanguage": "zh-CN",
+            "outputStyle": "review",
+            "permissionMode": "ask",
+            "thinkingEnabled": False,
+            "autoMemoryEnabled": True,
+            "traceEnabled": False,
             "requireCommandApproval": False,
             "sendMode": "enter",
             "uiScale": 125,
             "notificationsEnabled": True,
+            "networkMode": "manual",
+            "manualProxy": "http://127.0.0.1:7890",
+            "aiRequestTimeoutSeconds": 900,
+            "webfetchPreflightSkip": False,
+            "webSearchProvider": "brave",
+            "tavilyApiKeyEnv": "TAVILY_API_KEY",
+            "braveApiKeyEnv": "BRAVE_SEARCH_API_KEY",
+            "dataDirMode": "portable",
+            "portableDataDir": str(tmp_path / "portable-data"),
         }
     )
 
     assert state["generalSave"]["ok"] is True
-    assert state["generalSettings"] == {
-        "requireCommandApproval": False,
-        "sendMode": "enter",
-        "uiScale": 125,
-        "notificationsEnabled": True,
-    }
+    assert state["generalSettings"]["theme"] == "classic"
+    assert state["generalSettings"]["language"] == "zh-CN"
+    assert state["generalSettings"]["replyLanguage"] == "zh-CN"
+    assert state["generalSettings"]["outputStyle"] == "review"
+    assert state["generalSettings"]["thinkingEnabled"] is False
+    assert state["generalSettings"]["autoMemoryEnabled"] is True
+    assert state["generalSettings"]["traceEnabled"] is False
+    assert state["generalSettings"]["requireCommandApproval"] is False
+    assert state["generalSettings"]["sendMode"] == "enter"
+    assert state["generalSettings"]["uiScale"] == 125
+    assert state["generalSettings"]["notificationsEnabled"] is True
+    assert state["generalSettings"]["networkMode"] == "manual"
+    assert state["generalSettings"]["manualProxy"] == "http://127.0.0.1:7890"
+    assert state["generalSettings"]["aiRequestTimeoutSeconds"] == 900
+    assert state["generalSettings"]["webfetchPreflightSkip"] is False
+    assert state["generalSettings"]["webSearchProvider"] == "brave"
+    assert state["generalSettings"]["dataDirMode"] == "portable"
     reloaded = RuntimeConfig.load(config_file=config_file, workdir=tmp_path)
+    assert reloaded.desktop_theme == "classic"
+    assert reloaded.desktop_reply_language == "zh-CN"
+    assert reloaded.desktop_output_style == "review"
+    assert reloaded.desktop_thinking_enabled is False
+    assert reloaded.desktop_auto_memory_enabled is True
+    assert reloaded.desktop_trace_enabled is False
     assert reloaded.require_command_approval is False
     assert reloaded.desktop_send_mode == "enter"
     assert reloaded.desktop_ui_scale == 125
     assert reloaded.desktop_notifications_enabled is True
+    assert reloaded.desktop_network_mode == "manual"
+    assert reloaded.desktop_manual_proxy == "http://127.0.0.1:7890"
+    assert reloaded.ai_request_timeout_seconds == 900
+    assert reloaded.desktop_web_search_provider == "brave"
+    assert reloaded.desktop_data_dir_mode == "portable"
 
 
 def test_desktop_general_settings_reject_invalid_payload(tmp_path: Path) -> None:

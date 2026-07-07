@@ -264,10 +264,34 @@ class DesktopApp:
             "skillsSettings": self._skills_settings_state(),
             "memorySettings": self._memory_settings_state(),
             "generalSettings": {
+                "theme": self.config.desktop_theme,
+                "language": self.config.desktop_language,
+                "replyLanguage": self.config.desktop_reply_language,
+                "outputStyle": self.config.desktop_output_style,
+                "permissionMode": self.config.desktop_permission_mode,
+                "thinkingEnabled": self.config.desktop_thinking_enabled,
+                "autoMemoryEnabled": self.config.desktop_auto_memory_enabled,
+                "traceEnabled": self.config.desktop_trace_enabled,
                 "requireCommandApproval": self.config.require_command_approval,
                 "sendMode": self.config.desktop_send_mode,
                 "uiScale": self.config.desktop_ui_scale,
                 "notificationsEnabled": self.config.desktop_notifications_enabled,
+                "networkMode": self.config.desktop_network_mode,
+                "manualProxy": self.config.desktop_manual_proxy,
+                "aiRequestTimeoutSeconds": self.config.ai_request_timeout_seconds,
+                "webfetchPreflightSkip": self.config.desktop_webfetch_preflight_skip,
+                "webSearchProvider": self.config.desktop_web_search_provider,
+                "tavilyApiKeyEnv": self.config.desktop_tavily_api_key_env,
+                "tavilyApiKeyPresent": bool(os.environ.get(self.config.desktop_tavily_api_key_env, "").strip()),
+                "braveApiKeyEnv": self.config.desktop_brave_api_key_env,
+                "braveApiKeyPresent": bool(os.environ.get(self.config.desktop_brave_api_key_env, "").strip()),
+                "dataDirMode": self.config.desktop_data_dir_mode,
+                "portableDataDir": self.config.desktop_portable_data_dir,
+                "actualDataDir": str(self.config.config_file.parent),
+                "configFile": str(self.config.config_file),
+                "sessionsDir": str(self.config.sessions_dir),
+                "skillsDir": str(self.config.skills_dir),
+                "mcpConfigFile": str(self.config.mcp_config_file),
             },
         }
 
@@ -624,15 +648,54 @@ class DesktopApp:
         return "Anthropic" if self.config.provider.name == "anthropic" else "OpenAI-compatible"
 
     def save_general_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        approval = payload.get("requireCommandApproval")
-        notifications = payload.get("notificationsEnabled")
+        approval = payload.get("requireCommandApproval", self.config.require_command_approval)
+        notifications = payload.get(
+            "notificationsEnabled",
+            self.config.desktop_notifications_enabled,
+        )
         send_mode = payload.get("sendMode")
         ui_scale = payload.get("uiScale")
-        if not isinstance(approval, bool) or not isinstance(notifications, bool):
+        theme = payload.get("theme", self.config.desktop_theme)
+        language = payload.get("language", self.config.desktop_language)
+        reply_language = payload.get("replyLanguage", self.config.desktop_reply_language)
+        output_style = payload.get("outputStyle", self.config.desktop_output_style)
+        permission_mode = payload.get("permissionMode", self.config.desktop_permission_mode)
+        thinking = payload.get("thinkingEnabled", self.config.desktop_thinking_enabled)
+        auto_memory = payload.get("autoMemoryEnabled", self.config.desktop_auto_memory_enabled)
+        trace = payload.get("traceEnabled", self.config.desktop_trace_enabled)
+        network_mode = payload.get("networkMode", self.config.desktop_network_mode)
+        manual_proxy = str(payload.get("manualProxy", self.config.desktop_manual_proxy)).strip()
+        timeout = payload.get("aiRequestTimeoutSeconds", self.config.ai_request_timeout_seconds)
+        webfetch_skip = payload.get(
+            "webfetchPreflightSkip",
+            self.config.desktop_webfetch_preflight_skip,
+        )
+        web_search_provider = payload.get(
+            "webSearchProvider",
+            self.config.desktop_web_search_provider,
+        )
+        tavily_env = str(payload.get("tavilyApiKeyEnv", self.config.desktop_tavily_api_key_env)).strip()
+        brave_env = str(payload.get("braveApiKeyEnv", self.config.desktop_brave_api_key_env)).strip()
+        data_dir_mode = payload.get("dataDirMode", self.config.desktop_data_dir_mode)
+        portable_data_dir = str(
+            payload.get("portableDataDir", self.config.desktop_portable_data_dir)
+        ).strip()
+        boolean_values = [approval, notifications, thinking, auto_memory, trace, webfetch_skip]
+        if any(not isinstance(value, bool) for value in boolean_values):
             return {
                 **self.state(),
                 "generalSave": {"ok": False, "message": "开关设置格式无效。"},
             }
+        if theme not in {"pure", "classic", "dark"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "配色主题无效。"}}
+        if language not in {"en", "zh-CN", "zh-TW", "ja", "ko"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "显示语言无效。"}}
+        if reply_language not in {"default", "en", "zh-CN", "zh-TW", "ja", "ko"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "回复语言无效。"}}
+        if output_style not in {"default", "concise", "explanatory", "review"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "输出风格无效。"}}
+        if permission_mode not in {"ask", "skip"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "默认会话权限模式无效。"}}
         if send_mode not in {"enter", "modifier-enter"}:
             return {
                 **self.state(),
@@ -643,10 +706,53 @@ class DesktopApp:
                 **self.state(),
                 "generalSave": {"ok": False, "message": "界面缩放必须在 50% 到 200% 之间。"},
             }
-        self.config.require_command_approval = approval
+        if network_mode not in {"direct", "system", "manual"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "网络代理模式无效。"}}
+        if network_mode == "manual" and not _looks_like_proxy_url(manual_proxy):
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "手动代理必须填写 http:// 或 https:// 地址。"},
+            }
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 30 <= timeout <= 1800:
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "AI 请求超时必须在 30 到 1800 秒之间。"},
+            }
+        if web_search_provider not in {"auto", "tavily", "brave", "provider", "off"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "WebSearch 模式无效。"}}
+        if not _looks_like_env_name(tavily_env) or not _looks_like_env_name(brave_env):
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "搜索 API Key 环境变量名格式无效。"},
+            }
+        if data_dir_mode not in {"system", "portable"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "数据存储位置无效。"}}
+        if data_dir_mode == "portable" and not portable_data_dir:
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "使用便携目录时必须填写目录路径。"},
+            }
+        self.config.desktop_theme = cast(Any, theme)
+        self.config.desktop_language = cast(Any, language)
+        self.config.desktop_reply_language = cast(Any, reply_language)
+        self.config.desktop_output_style = cast(Any, output_style)
+        self.config.desktop_permission_mode = cast(Any, permission_mode)
+        self.config.desktop_thinking_enabled = bool(thinking)
+        self.config.desktop_auto_memory_enabled = bool(auto_memory)
+        self.config.desktop_trace_enabled = bool(trace)
+        self.config.require_command_approval = permission_mode != "skip" and bool(approval)
         self.config.desktop_send_mode = send_mode
         self.config.desktop_ui_scale = ui_scale
-        self.config.desktop_notifications_enabled = notifications
+        self.config.desktop_notifications_enabled = bool(notifications)
+        self.config.desktop_network_mode = cast(Any, network_mode)
+        self.config.desktop_manual_proxy = manual_proxy if network_mode == "manual" else ""
+        self.config.ai_request_timeout_seconds = timeout
+        self.config.desktop_webfetch_preflight_skip = bool(webfetch_skip)
+        self.config.desktop_web_search_provider = cast(Any, web_search_provider)
+        self.config.desktop_tavily_api_key_env = tavily_env
+        self.config.desktop_brave_api_key_env = brave_env
+        self.config.desktop_data_dir_mode = cast(Any, data_dir_mode)
+        self.config.desktop_portable_data_dir = portable_data_dir
         self.config.save()
         self.agent = self._new_agent(session_id=self.agent.session_id)
         return {
@@ -1672,6 +1778,15 @@ def _looks_like_host(value: str) -> bool:
     return ".." not in value and not value.startswith(".") and not value.endswith(".")
 
 
+def _looks_like_proxy_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _looks_like_env_name(value: str) -> bool:
+    return re.fullmatch(r"[A-Z_][A-Z0-9_]{1,80}", value) is not None
+
+
 def _display_host_for_h5(host: str) -> str:
     if host in {"0.0.0.0", "::"}:
         return _lan_ip()
@@ -2683,6 +2798,9 @@ def render_desktop_html() -> str:
     .toggle-control input:checked + span { background: #ad6048; }
     .toggle-control input:checked + span::after { transform: translateX(20px); }
     .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .segmented.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .segmented.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .segmented.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     .segment-option {
       border: 1px solid #d9e1ec; border-radius: 8px; background: #fff; color: #536172;
       padding: 12px; text-align: left; cursor: pointer; font: inherit;
@@ -2693,6 +2811,18 @@ def render_desktop_html() -> str:
     .scale-row { display: grid; grid-template-columns: 1fr 72px; gap: 14px; align-items: center; }
     .scale-row input[type="range"] { width: 100%; accent-color: #ad6048; }
     .scale-value { text-align: center; color: #344054; font-weight: 720; }
+    .general-card-panel { border: 1px solid #dfe6ef; border-radius: 8px; background: #fbfcfe; padding: 16px 18px; display: grid; gap: 12px; }
+    .general-input-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+    .general-input-row input {
+      height: 44px; border: 1px solid #d9e1ec; border-radius: 8px; padding: 0 12px;
+      font: inherit; background: white; color: #202633; min-width: 0;
+    }
+    .step-btn { width: 48px; height: 44px; border: 1px solid #d9e1ec; border-radius: 8px; background: white; color: #344054; font: inherit; font-weight: 820; cursor: pointer; }
+    .env-status { color: #7a8798; font-size: 13px; }
+    .env-status.ok { color: #0f9f6e; }
+    .storage-card { border: 1px solid #dfe6ef; border-radius: 8px; background: white; padding: 16px; display: grid; gap: 12px; }
+    .storage-card.active { border-color: #ad6048; box-shadow: inset 0 0 0 1px rgba(173,96,72,.14); }
+    .storage-path { border: 1px solid #dfe6ef; border-radius: 8px; padding: 12px 14px; background: #fbfcfe; color: #536172; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .general-actions { display: flex; align-items: center; gap: 14px; }
     .app { grid-template-columns: 388px minmax(720px, 1fr) 360px; background: #fff; }
     .app.inspector-collapsed { grid-template-columns: 388px minmax(720px, 1fr) 56px; }
@@ -3220,44 +3350,197 @@ def render_desktop_html() -> str:
               <div class="settings-head">
                 <div>
                   <div class="settings-title">通用</div>
-                  <div class="settings-subtitle">控制桌面端会话、输入和本机通知行为。</div>
+                  <div class="settings-subtitle">控制桌面端显示、会话权限、网络请求、搜索和数据目录。</div>
                 </div>
               </div>
               <div class="general-sections">
                 <section class="general-section">
-                  <h3>命令审批</h3>
-                  <p>运行终端命令前是否必须获得确认。</p>
+                  <h3>配色主题</h3>
+                  <p>在纯白、经典暖色和暗色工作区之间切换。</p>
+                  <div class="setting-card segmented three">
+                    <button class="segment-option" data-theme="pure"><strong>纯白</strong><small>浅色高对比工作区。</small></button>
+                    <button class="segment-option" data-theme="classic"><strong>经典暖色</strong><small>使用暖色强调和柔和背景。</small></button>
+                    <button class="segment-option" data-theme="dark"><strong>暗色</strong><small>低亮度桌面工作区。</small></button>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>语言</h3>
+                  <p>选择桌面端显示语言和新会话默认回复语言。</p>
+                  <div class="setting-card segmented five">
+                    <button class="segment-option" data-language="en"><strong>English</strong></button>
+                    <button class="segment-option" data-language="zh-CN"><strong>简体中文</strong></button>
+                    <button class="segment-option" data-language="zh-TW"><strong>繁體中文</strong></button>
+                    <button class="segment-option" data-language="ja"><strong>日本語</strong></button>
+                    <button class="segment-option" data-language="ko"><strong>한국어</strong></button>
+                  </div>
+                  <div class="field">
+                    <label for="replyLanguage">回复语言</label>
+                    <select id="replyLanguage">
+                      <option value="default">默认（跟随模型 / 英语）</option>
+                      <option value="en">English</option>
+                      <option value="zh-CN">简体中文</option>
+                      <option value="zh-TW">繁體中文</option>
+                      <option value="ja">日本語</option>
+                      <option value="ko">한국어</option>
+                    </select>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>输出风格</h3>
+                  <p>选择新会话或重启后的表达方式。</p>
+                  <div class="setting-card segmented four">
+                    <button class="segment-option" data-output-style="default"><strong>Default</strong><small>高效完成编码任务，回答保持简洁。</small></button>
+                    <button class="segment-option" data-output-style="concise"><strong>Concise</strong><small>更短的执行汇报。</small></button>
+                    <button class="segment-option" data-output-style="explanatory"><strong>Explain</strong><small>保留更多上下文解释。</small></button>
+                    <button class="segment-option" data-output-style="review"><strong>Review</strong><small>更偏审查和风险提示。</small></button>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>默认会话权限</h3>
+                  <p>选择桌面端新建会话时默认使用的权限模式。</p>
+                  <div class="setting-card segmented">
+                    <button class="segment-option" data-permission-mode="ask"><strong>询问</strong><small>运行终端命令前要求确认。</small></button>
+                    <button class="segment-option" data-permission-mode="skip"><strong>跳过</strong><small>允许命令直接运行，仅适合可信项目。</small></button>
+                  </div>
                   <div class="setting-card">
                     <div class="setting-row">
-                      <div class="setting-copy"><div class="setting-name">要求命令审批</div><div class="setting-help">关闭后，模型发起的命令可以直接运行。建议保持开启。</div></div>
+                      <div class="setting-copy"><div class="setting-name">要求命令审批</div><div class="setting-help">权限模式为“跳过”时会自动关闭。建议日常保持开启。</div></div>
                       <label class="toggle-control"><input type="checkbox" id="requireCommandApproval" /><span></span></label>
                     </div>
                   </div>
                 </section>
                 <section class="general-section">
-                  <h3>消息发送方式</h3>
-                  <p>选择输入框如何发送消息。</p>
-                  <div class="setting-card segmented" id="sendModeControl">
-                    <button class="segment-option" data-send-mode="enter"><strong>Enter 发送</strong><small>Shift+Enter 换行</small></button>
-                    <button class="segment-option" data-send-mode="modifier-enter"><strong>Ctrl/Cmd+Enter 发送</strong><small>Enter 换行</small></button>
+                  <h3>思考模式</h3>
+                  <p>控制新会话是否启用模型思考。关闭后，兼容供应商会收到显式非思考模式参数。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">启用思考模式</div><div class="setting-help">适合复杂任务；弱模型或低延迟场景可以关闭。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="thinkingEnabled" /><span></span></label>
+                    </div>
                   </div>
                 </section>
                 <section class="general-section">
-                  <h3>界面缩放</h3>
-                  <p>调整桌面界面的显示大小。</p>
-                  <div class="setting-card scale-row">
-                    <input type="range" id="uiScale" min="50" max="200" step="5" value="100" />
-                    <div class="scale-value" id="uiScaleValue">100%</div>
+                  <h3>自动做梦</h3>
+                  <p>在积累足够会话后，后台整理和压缩 auto-memory。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">启用自动做梦</div><div class="setting-help">默认关闭，因为它可能发起后台模型调用。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="autoMemoryEnabled" /><span></span></label>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>Agent Trace</h3>
+                  <p>收集本地会话的模型请求链路，用于排查卡住、失败和异常等待。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">收集 Agent Trace</div><div class="setting-help">写入本机 trace 目录；不上传到远端。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="traceEnabled" /><span></span></label>
+                    </div>
+                    <div class="storage-path" id="tracePath">-</div>
                   </div>
                 </section>
                 <section class="general-section">
                   <h3>系统通知</h3>
-                  <p>任务完成后使用浏览器的系统通知能力提醒。</p>
+                  <p>使用系统原生通知提醒授权确认、Agent 回复完成和定时任务结果。</p>
                   <div class="setting-card">
                     <div class="setting-row">
                       <div class="setting-copy"><div class="setting-name">启用系统通知</div><div class="setting-help">首次开启时浏览器会请求通知权限。</div></div>
                       <label class="toggle-control"><input type="checkbox" id="notificationsEnabled" /><span></span></label>
                     </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>消息发送方式</h3>
+                  <p>选择桌面端对话输入框如何发送消息。</p>
+                  <div class="setting-card segmented" id="sendModeControl">
+                    <button class="segment-option" data-send-mode="enter"><strong>Enter 发送</strong><small>Shift+Enter 换行。</small></button>
+                    <button class="segment-option" data-send-mode="modifier-enter"><strong>Ctrl/Cmd+Enter 发送</strong><small>Enter 和 Shift+Enter 都会换行。</small></button>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>界面缩放</h3>
+                  <p>调整整个界面的显示大小。</p>
+                  <div class="general-card-panel">
+                    <div class="scale-row">
+                      <input type="range" id="uiScale" min="50" max="200" step="5" value="100" />
+                      <div class="scale-value" id="uiScaleValue">100%</div>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>网络</h3>
+                  <p>控制桌面会话发起的服务商 API 请求。</p>
+                  <div class="general-card-panel">
+                    <div class="segmented three">
+                      <button class="segment-option" data-network-mode="direct"><strong>直连</strong><small>服务商 API 请求不使用应用继承到的代理。</small></button>
+                      <button class="segment-option" data-network-mode="system"><strong>系统代理</strong><small>使用应用进程继承到的代理设置。</small></button>
+                      <button class="segment-option" data-network-mode="manual"><strong>手动代理</strong><small>使用下方填写的 HTTP 或 HTTPS 代理地址。</small></button>
+                    </div>
+                    <div class="field">
+                      <label for="manualProxy">手动代理地址</label>
+                      <input id="manualProxy" placeholder="http://127.0.0.1:7890" />
+                    </div>
+                    <div class="setting-name">AI 请求超时</div>
+                    <div class="general-input-row">
+                      <button class="step-btn" data-timeout-step="-30">-30</button>
+                      <input id="aiRequestTimeoutSeconds" inputmode="numeric" />
+                      <button class="step-btn" data-timeout-step="30">+30</button>
+                    </div>
+                    <div class="setting-help">用于服务商请求、流式首响应和连接测试。支持 30-1800 秒。</div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>WebFetch 预检</h3>
+                  <p>默认跳过域名预检，避免第三方供应商或受限网络下出现误报失败。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">跳过 WebFetch 域名预检</div><div class="setting-help">只有明确需要恢复上游默认安全预检时，才建议关闭。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="webfetchPreflightSkip" /><span></span></label>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>WebSearch</h3>
+                  <p>配置 Agent 联网搜索在 Claude 原生、第三方供应商和本地 fallback key 之间如何选择。</p>
+                  <div class="general-card-panel">
+                    <div class="segmented five">
+                      <button class="segment-option" data-web-search-provider="auto"><strong>自动</strong></button>
+                      <button class="segment-option" data-web-search-provider="tavily"><strong>Tavily</strong></button>
+                      <button class="segment-option" data-web-search-provider="brave"><strong>Brave</strong></button>
+                      <button class="segment-option" data-web-search-provider="provider"><strong>模型原生</strong></button>
+                      <button class="segment-option" data-web-search-provider="off"><strong>关闭</strong></button>
+                    </div>
+                    <div class="field">
+                      <label for="tavilyApiKeyEnv">Tavily API Key 环境变量</label>
+                      <input id="tavilyApiKeyEnv" placeholder="TAVILY_API_KEY" />
+                      <div class="env-status" id="tavilyApiKeyStatus">未检测</div>
+                    </div>
+                    <div class="field">
+                      <label for="braveApiKeyEnv">Brave Search API Key 环境变量</label>
+                      <input id="braveApiKeyEnv" placeholder="BRAVE_SEARCH_API_KEY" />
+                      <div class="env-status" id="braveApiKeyStatus">未检测</div>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>数据存储位置</h3>
+                  <p>切换后，会话记录、Skills、MCP、Provider 配置、任务和缓存会从新的目录读取。</p>
+                  <div class="general-card-panel">
+                    <div class="storage-card" data-data-dir-mode="system">
+                      <div class="setting-name">使用系统目录</div>
+                      <div class="setting-help">回到默认数据源。启动环境变量仍可覆盖实际读取目录。</div>
+                    </div>
+                    <div class="storage-card" data-data-dir-mode="portable">
+                      <div class="setting-name">使用便携目录</div>
+                      <div class="setting-help">适合放在移动硬盘或和应用一起打包迁移。</div>
+                      <div class="field">
+                        <label for="portableDataDir">便携数据目录</label>
+                        <input id="portableDataDir" placeholder="/Applications/Cat Agentic.app/Contents/MacOS/data" />
+                      </div>
+                    </div>
+                    <div class="setting-help">当前实际读取目录</div>
+                    <div class="storage-path" id="actualDataDir">-</div>
                   </div>
                 </section>
                 <div class="general-actions">
@@ -3648,6 +3931,13 @@ def render_desktop_html() -> str:
     let currentDraftKey = '';
     let desktopSendMode = 'modifier-enter';
     let desktopNotificationsEnabled = false;
+    let desktopTheme = 'pure';
+    let desktopLanguage = 'zh-CN';
+    let desktopOutputStyle = 'default';
+    let desktopPermissionMode = 'ask';
+    let desktopNetworkMode = 'direct';
+    let desktopWebSearchProvider = 'auto';
+    let desktopDataDirMode = 'system';
     let latestMemoryItems = [];
     let selectedMemoryId = '';
     let mcpAddScope = 'project-private';
@@ -3898,24 +4188,85 @@ def render_desktop_html() -> str:
     }
     function renderGeneralSettings(state) {
       const settings = state.generalSettings || {};
+      desktopTheme = settings.theme || 'pure';
+      desktopLanguage = settings.language || 'zh-CN';
+      desktopOutputStyle = settings.outputStyle || 'default';
+      desktopPermissionMode = settings.permissionMode || 'ask';
+      desktopNetworkMode = settings.networkMode || 'direct';
+      desktopWebSearchProvider = settings.webSearchProvider || 'auto';
+      desktopDataDirMode = settings.dataDirMode || 'system';
       desktopSendMode = settings.sendMode || 'modifier-enter';
       desktopNotificationsEnabled = !!settings.notificationsEnabled;
-      $('requireCommandApproval').checked = settings.requireCommandApproval !== false;
+      $('replyLanguage').value = settings.replyLanguage || 'default';
+      $('requireCommandApproval').checked = settings.requireCommandApproval !== false && desktopPermissionMode !== 'skip';
+      $('requireCommandApproval').disabled = desktopPermissionMode === 'skip';
+      $('thinkingEnabled').checked = settings.thinkingEnabled !== false;
+      $('autoMemoryEnabled').checked = !!settings.autoMemoryEnabled;
+      $('traceEnabled').checked = settings.traceEnabled !== false;
       $('notificationsEnabled').checked = desktopNotificationsEnabled;
       $('uiScale').value = String(settings.uiScale || 100);
       $('uiScaleValue').textContent = `${settings.uiScale || 100}%`;
       document.documentElement.style.zoom = `${settings.uiScale || 100}%`;
-      document.querySelectorAll('[data-send-mode]').forEach(button => {
-        button.classList.toggle('active', button.dataset.sendMode === desktopSendMode);
-      });
+      $('manualProxy').value = settings.manualProxy || '';
+      $('aiRequestTimeoutSeconds').value = String(settings.aiRequestTimeoutSeconds || 600);
+      $('webfetchPreflightSkip').checked = settings.webfetchPreflightSkip !== false;
+      $('tavilyApiKeyEnv').value = settings.tavilyApiKeyEnv || 'TAVILY_API_KEY';
+      $('braveApiKeyEnv').value = settings.braveApiKeyEnv || 'BRAVE_SEARCH_API_KEY';
+      $('portableDataDir').value = settings.portableDataDir || '';
+      $('actualDataDir').textContent = settings.actualDataDir || settings.configFile || '-';
+      $('tracePath').textContent = settings.actualDataDir ? `${settings.actualDataDir}/traces` : '-';
+      renderEnvStatus('tavilyApiKeyStatus', settings.tavilyApiKeyPresent, settings.tavilyApiKeyEnv || 'TAVILY_API_KEY');
+      renderEnvStatus('braveApiKeyStatus', settings.braveApiKeyPresent, settings.braveApiKeyEnv || 'BRAVE_SEARCH_API_KEY');
+      setActiveByData('[data-theme]', 'theme', desktopTheme);
+      setActiveByData('[data-language]', 'language', desktopLanguage);
+      setActiveByData('[data-output-style]', 'outputStyle', desktopOutputStyle);
+      setActiveByData('[data-permission-mode]', 'permissionMode', desktopPermissionMode);
+      setActiveByData('[data-send-mode]', 'sendMode', desktopSendMode);
+      setActiveByData('[data-network-mode]', 'networkMode', desktopNetworkMode);
+      setActiveByData('[data-web-search-provider]', 'webSearchProvider', desktopWebSearchProvider);
+      setStorageMode(desktopDataDirMode, false);
     }
     function generalPayload() {
       return {
+        theme: desktopTheme,
+        language: desktopLanguage,
+        replyLanguage: $('replyLanguage').value,
+        outputStyle: desktopOutputStyle,
+        permissionMode: desktopPermissionMode,
+        thinkingEnabled: $('thinkingEnabled').checked,
+        autoMemoryEnabled: $('autoMemoryEnabled').checked,
+        traceEnabled: $('traceEnabled').checked,
         requireCommandApproval: $('requireCommandApproval').checked,
         sendMode: desktopSendMode,
         uiScale: Number($('uiScale').value),
-        notificationsEnabled: $('notificationsEnabled').checked
+        notificationsEnabled: $('notificationsEnabled').checked,
+        networkMode: desktopNetworkMode,
+        manualProxy: $('manualProxy').value.trim(),
+        aiRequestTimeoutSeconds: Number($('aiRequestTimeoutSeconds').value),
+        webfetchPreflightSkip: $('webfetchPreflightSkip').checked,
+        webSearchProvider: desktopWebSearchProvider,
+        tavilyApiKeyEnv: $('tavilyApiKeyEnv').value.trim(),
+        braveApiKeyEnv: $('braveApiKeyEnv').value.trim(),
+        dataDirMode: desktopDataDirMode,
+        portableDataDir: $('portableDataDir').value.trim()
       };
+    }
+    function setActiveByData(selector, key, value) {
+      document.querySelectorAll(selector).forEach(button => {
+        button.classList.toggle('active', button.dataset[key] === value);
+      });
+    }
+    function renderEnvStatus(id, present, envName) {
+      const box = $(id);
+      box.textContent = present ? `已检测到 ${envName}` : `未检测到 ${envName}`;
+      box.classList.toggle('ok', !!present);
+    }
+    function setStorageMode(mode, update = true) {
+      desktopDataDirMode = mode;
+      document.querySelectorAll('[data-data-dir-mode]').forEach(card => {
+        card.classList.toggle('active', card.dataset.dataDirMode === mode);
+      });
+      if (update && mode === 'system') $('portableDataDir').value = $('portableDataDir').value || '';
     }
     function showGeneralResult(result) {
       const box = $('generalResult');
@@ -4659,6 +5010,38 @@ def render_desktop_html() -> str:
       button.onclick = () => {
         desktopSendMode = button.dataset.sendMode;
         document.querySelectorAll('[data-send-mode]').forEach(item => item.classList.toggle('active', item === button));
+      };
+    });
+    document.querySelectorAll('[data-theme]').forEach(button => {
+      button.onclick = () => { desktopTheme = button.dataset.theme || 'pure'; setActiveByData('[data-theme]', 'theme', desktopTheme); };
+    });
+    document.querySelectorAll('[data-language]').forEach(button => {
+      button.onclick = () => { desktopLanguage = button.dataset.language || 'zh-CN'; setActiveByData('[data-language]', 'language', desktopLanguage); };
+    });
+    document.querySelectorAll('[data-output-style]').forEach(button => {
+      button.onclick = () => { desktopOutputStyle = button.dataset.outputStyle || 'default'; setActiveByData('[data-output-style]', 'outputStyle', desktopOutputStyle); };
+    });
+    document.querySelectorAll('[data-permission-mode]').forEach(button => {
+      button.onclick = () => {
+        desktopPermissionMode = button.dataset.permissionMode || 'ask';
+        setActiveByData('[data-permission-mode]', 'permissionMode', desktopPermissionMode);
+        $('requireCommandApproval').disabled = desktopPermissionMode === 'skip';
+        if (desktopPermissionMode === 'skip') $('requireCommandApproval').checked = false;
+      };
+    });
+    document.querySelectorAll('[data-network-mode]').forEach(button => {
+      button.onclick = () => { desktopNetworkMode = button.dataset.networkMode || 'direct'; setActiveByData('[data-network-mode]', 'networkMode', desktopNetworkMode); };
+    });
+    document.querySelectorAll('[data-web-search-provider]').forEach(button => {
+      button.onclick = () => { desktopWebSearchProvider = button.dataset.webSearchProvider || 'auto'; setActiveByData('[data-web-search-provider]', 'webSearchProvider', desktopWebSearchProvider); };
+    });
+    document.querySelectorAll('[data-data-dir-mode]').forEach(card => {
+      card.onclick = () => setStorageMode(card.dataset.dataDirMode || 'system');
+    });
+    document.querySelectorAll('[data-timeout-step]').forEach(button => {
+      button.onclick = () => {
+        const next = Math.max(30, Math.min(1800, Number($('aiRequestTimeoutSeconds').value || 600) + Number(button.dataset.timeoutStep || 0)));
+        $('aiRequestTimeoutSeconds').value = String(next);
       };
     });
     $('uiScale').addEventListener('input', () => {
