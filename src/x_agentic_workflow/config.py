@@ -39,6 +39,7 @@ class ProviderConfig:
 @dataclass
 class RuntimeConfig:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
+    provider_profiles: list[dict[str, Any]] = field(default_factory=list)
     max_tokens: int = 4096
     temperature: float = 0.2
     workdir: Path = field(default_factory=lambda: Path.cwd().resolve())
@@ -100,8 +101,15 @@ class RuntimeConfig:
         except (TypeError, ValueError):
             h5_keepalive = 30
 
+        provider_profiles = data.get("provider_profiles", [])
+        if not isinstance(provider_profiles, list):
+            provider_profiles = []
+
         return cls(
             provider=provider,
+            provider_profiles=[
+                profile for profile in provider_profiles if isinstance(profile, dict)
+            ],
             max_tokens=int(data.get("max_tokens", os.environ.get("XAW_MAX_TOKENS", 4096))),
             temperature=float(data.get("temperature", os.environ.get("XAW_TEMPERATURE", 0.2))),
             workdir=(workdir or Path.cwd()).resolve(),
@@ -147,6 +155,7 @@ class RuntimeConfig:
                 "base_url": self.provider.base_url,
                 "api_key_env": self.provider.api_key_env,
             },
+            "provider_profiles": self.provider_profiles,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
             "max_output_chars": self.max_output_chars,

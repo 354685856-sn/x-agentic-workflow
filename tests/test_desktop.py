@@ -93,8 +93,10 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert 'id="runTerminalProbe"' in html
     assert "探针输出" in html
     assert 'id="mcpSettingsPanel"' in html
-    assert 'id="refreshMcpSettings"' in html
-    assert "MCP 配置文件" in html
+    assert 'id="openMcpAddView"' in html
+    assert 'id="saveMcpServer"' in html
+    assert "/api/mcp/add" in html
+    assert "连接自定义 MCP" in html
     assert 'id="agentsSettingsPanel"' in html
     assert 'id="refreshAgentsSettings"' in html
     assert "AGENT 浏览器" in html
@@ -105,6 +107,7 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert 'id="memorySettingsPanel"' in html
     assert 'id="refreshMemorySettings"' in html
     assert 'id="memorySearch"' in html
+    assert "资源管理器" in html
     assert "记忆来源" in html
     assert 'id="requireCommandApproval"' in html
     assert 'id="notificationsEnabled"' in html
@@ -143,13 +146,14 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "/api/project/validate" in html
     assert "项目验证" in html
     assert "服务商" in html
-    assert "savedProviderCard" in html
-    assert "savedProviderMeta" in html
-    assert "providerSaveStatus" in html
-    assert "providerFormDirty" in html
+    assert "providerList" in html
+    assert "providerModal" in html
+    assert "providerPresetPills" in html
+    assert "/api/provider/add" in html
+    assert "/api/provider/select" in html
     assert "providerSubmitting" in html
     assert "runProviderAction" in html
-    assert "添加服务商" not in html
+    assert "添加服务商" in html
     assert "DRAFT_KEY_PREFIX" in html
     assert "draftKeyForState" in html
     assert "restoreDraftForState" in html
@@ -760,6 +764,71 @@ def test_desktop_provider_settings_save_without_secret_value(tmp_path: Path) -> 
     assert '"api_key_env": "DEEPSEEK_API_KEY"' in saved
     assert "deepseek-chat" in saved
     assert "sk-" not in saved
+
+
+def test_desktop_provider_profiles_add_and_select_without_secret_value(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    added = app.add_provider_profile(
+        {
+            "presetId": "deepseek",
+            "displayName": "DeepSeek",
+            "provider": "anthropic",
+            "protocolLabel": "DeepSeek",
+            "model": "deepseek-v4-pro",
+            "baseUrl": "https://api.deepseek.com/anthropic",
+            "apiKeyEnv": "ANTHROPIC_AUTH_TOKEN",
+            "toolSearchEnabled": True,
+        }
+    )
+
+    saved = (tmp_path / "config.json").read_text(encoding="utf-8")
+    assert added["providerSave"]["ok"] is True
+    assert added["provider"] == "anthropic"
+    assert added["model"] == "deepseek-v4-pro"
+    assert "provider_profiles" in saved
+    assert "ANTHROPIC_AUTH_TOKEN" in saved
+    assert "sk-" not in saved
+    active = next(profile for profile in added["providerProfiles"] if profile["active"])
+    selected = app.select_provider_profile({"id": active["id"]})
+    assert selected["providerSave"]["ok"] is True
+
+
+def test_desktop_add_mcp_server_writes_local_config(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    state = app.add_mcp_server(
+        {
+            "name": "chrome-devtools",
+            "scope": "project-private",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["chrome-devtools-mcp@latest"],
+            "envKeys": ["CHROME_TOKEN"],
+        }
+    )
+
+    saved = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
+    assert state["mcpAdd"]["ok"] is True
+    assert saved["mcpServers"]["chrome-devtools"]["command"] == "npx"
+    assert saved["mcpServers"]["chrome-devtools"]["args"] == ["chrome-devtools-mcp@latest"]
+    assert saved["mcpServers"]["chrome-devtools"]["env"] == {"CHROME_TOKEN": ""}
 
 
 def test_desktop_general_settings_are_validated_and_persisted(tmp_path: Path) -> None:
