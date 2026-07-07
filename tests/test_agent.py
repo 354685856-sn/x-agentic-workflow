@@ -85,6 +85,28 @@ def test_agent_mcp_context_summary_omits_disabled_servers(tmp_path: Path) -> Non
     assert "disabled-server" not in summary
 
 
+def test_agent_system_prompt_includes_desktop_preferences(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        workdir=tmp_path,
+        sessions_dir=tmp_path / ".sessions",
+        skills_dir=tmp_path / ".skills",
+        hooks_dir=tmp_path / ".hooks",
+        mcp_config_file=tmp_path / ".mcp.json",
+        desktop_reply_language="zh-CN",
+        desktop_output_style="review",
+        desktop_thinking_enabled=False,
+        desktop_web_search_provider="brave",
+    )
+    agent = Agent(config, session_id="preferences")
+
+    prompt = agent._system_prompt("review this")  # noqa: SLF001 - verifies prompt assembly.
+
+    assert "Reply language preference: Simplified Chinese." in prompt
+    assert "review-oriented style" in prompt
+    assert "Do not request or rely on extended thinking modes" in prompt
+    assert "Preferred web search provider: brave." in prompt
+
+
 def test_agent_emits_tool_timeline_events(tmp_path: Path) -> None:
     provider = FakeProvider(
         [

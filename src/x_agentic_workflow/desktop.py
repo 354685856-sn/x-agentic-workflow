@@ -2256,6 +2256,59 @@ def render_desktop_html() -> str:
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body { margin: 0; color: var(--ink); background: #fefefe; overflow: hidden; }
+    body.theme-classic {
+      --accent: #ad6048;
+      --soft: #fbf6f3;
+      --side: #f8f1ed;
+      background: #fffaf7;
+    }
+    body.theme-dark {
+      --ink: #eef2f7;
+      --muted: #a7b0bd;
+      --line: #2f3846;
+      --soft: #151922;
+      --panel: #10141d;
+      --side: #121824;
+      --accent: #f1a27f;
+      background: #0f131b;
+      color: var(--ink);
+    }
+    body.theme-dark aside,
+    body.theme-dark .settings-nav,
+    body.theme-dark .settings-panel,
+    body.theme-dark .stage,
+    body.theme-dark .inspector,
+    body.theme-dark .setting-card,
+    body.theme-dark .general-card-panel,
+    body.theme-dark .storage-card,
+    body.theme-dark .provider-card,
+    body.theme-dark .mcp-server-card {
+      background: var(--panel);
+      color: var(--ink);
+      border-color: var(--line);
+    }
+    body.theme-dark .segment-option,
+    body.theme-dark .field input,
+    body.theme-dark .field select,
+    body.theme-dark .general-input-row input,
+    body.theme-dark .storage-path,
+    body.theme-dark .mcp-config-path {
+      background: #151b26;
+      color: var(--ink);
+      border-color: var(--line);
+    }
+    body.theme-dark .settings-title,
+    body.theme-dark .general-section h3,
+    body.theme-dark .setting-name,
+    body.theme-dark .provider-name {
+      color: var(--ink);
+    }
+    body.theme-dark .settings-subtitle,
+    body.theme-dark .general-section > p,
+    body.theme-dark .setting-help,
+    body.theme-dark .provider-meta {
+      color: var(--muted);
+    }
     .app { height: 100vh; overflow: hidden; display: grid; grid-template-columns: 360px minmax(620px, 1fr) 360px; }
     .app.inspector-collapsed { grid-template-columns: 360px minmax(620px, 1fr) 56px; }
     aside {
@@ -4195,6 +4248,8 @@ def render_desktop_html() -> str:
       desktopNetworkMode = settings.networkMode || 'direct';
       desktopWebSearchProvider = settings.webSearchProvider || 'auto';
       desktopDataDirMode = settings.dataDirMode || 'system';
+      applyTheme(desktopTheme);
+      applyLanguage(desktopLanguage);
       desktopSendMode = settings.sendMode || 'modifier-enter';
       desktopNotificationsEnabled = !!settings.notificationsEnabled;
       $('replyLanguage').value = settings.replyLanguage || 'default';
@@ -4267,6 +4322,20 @@ def render_desktop_html() -> str:
         card.classList.toggle('active', card.dataset.dataDirMode === mode);
       });
       if (update && mode === 'system') $('portableDataDir').value = $('portableDataDir').value || '';
+      if (update) markGeneralDirty('数据目录模式已选择，保存后生效。');
+    }
+    function applyTheme(theme) {
+      document.body.classList.toggle('theme-classic', theme === 'classic');
+      document.body.classList.toggle('theme-dark', theme === 'dark');
+    }
+    function applyLanguage(language) {
+      const langMap = {'zh-CN': 'zh-CN', 'zh-TW': 'zh-TW', en: 'en', ja: 'ja', ko: 'ko'};
+      document.documentElement.lang = langMap[language] || 'zh-CN';
+    }
+    function markGeneralDirty(message = '设置已修改，点击保存后写入本地配置。') {
+      const box = $('generalResult');
+      box.textContent = message;
+      box.classList.remove('ok', 'bad');
     }
     function showGeneralResult(result) {
       const box = $('generalResult');
@@ -5010,16 +5079,31 @@ def render_desktop_html() -> str:
       button.onclick = () => {
         desktopSendMode = button.dataset.sendMode;
         document.querySelectorAll('[data-send-mode]').forEach(item => item.classList.toggle('active', item === button));
+        markGeneralDirty('发送方式已选择，保存后新输入会话继续使用。');
       };
     });
     document.querySelectorAll('[data-theme]').forEach(button => {
-      button.onclick = () => { desktopTheme = button.dataset.theme || 'pure'; setActiveByData('[data-theme]', 'theme', desktopTheme); };
+      button.onclick = () => {
+        desktopTheme = button.dataset.theme || 'pure';
+        setActiveByData('[data-theme]', 'theme', desktopTheme);
+        applyTheme(desktopTheme);
+        markGeneralDirty('主题已预览，保存后下次打开继续使用。');
+      };
     });
     document.querySelectorAll('[data-language]').forEach(button => {
-      button.onclick = () => { desktopLanguage = button.dataset.language || 'zh-CN'; setActiveByData('[data-language]', 'language', desktopLanguage); };
+      button.onclick = () => {
+        desktopLanguage = button.dataset.language || 'zh-CN';
+        setActiveByData('[data-language]', 'language', desktopLanguage);
+        applyLanguage(desktopLanguage);
+        markGeneralDirty('显示语言偏好已选择，保存后写入配置。');
+      };
     });
     document.querySelectorAll('[data-output-style]').forEach(button => {
-      button.onclick = () => { desktopOutputStyle = button.dataset.outputStyle || 'default'; setActiveByData('[data-output-style]', 'outputStyle', desktopOutputStyle); };
+      button.onclick = () => {
+        desktopOutputStyle = button.dataset.outputStyle || 'default';
+        setActiveByData('[data-output-style]', 'outputStyle', desktopOutputStyle);
+        markGeneralDirty('输出风格已选择，保存后进入新请求的系统提示。');
+      };
     });
     document.querySelectorAll('[data-permission-mode]').forEach(button => {
       button.onclick = () => {
@@ -5027,13 +5111,22 @@ def render_desktop_html() -> str:
         setActiveByData('[data-permission-mode]', 'permissionMode', desktopPermissionMode);
         $('requireCommandApproval').disabled = desktopPermissionMode === 'skip';
         if (desktopPermissionMode === 'skip') $('requireCommandApproval').checked = false;
+        markGeneralDirty('权限模式已选择，保存后影响命令审批策略。');
       };
     });
     document.querySelectorAll('[data-network-mode]').forEach(button => {
-      button.onclick = () => { desktopNetworkMode = button.dataset.networkMode || 'direct'; setActiveByData('[data-network-mode]', 'networkMode', desktopNetworkMode); };
+      button.onclick = () => {
+        desktopNetworkMode = button.dataset.networkMode || 'direct';
+        setActiveByData('[data-network-mode]', 'networkMode', desktopNetworkMode);
+        markGeneralDirty('网络模式已选择，保存后影响后续服务商请求。');
+      };
     });
     document.querySelectorAll('[data-web-search-provider]').forEach(button => {
-      button.onclick = () => { desktopWebSearchProvider = button.dataset.webSearchProvider || 'auto'; setActiveByData('[data-web-search-provider]', 'webSearchProvider', desktopWebSearchProvider); };
+      button.onclick = () => {
+        desktopWebSearchProvider = button.dataset.webSearchProvider || 'auto';
+        setActiveByData('[data-web-search-provider]', 'webSearchProvider', desktopWebSearchProvider);
+        markGeneralDirty('WebSearch 模式已选择，保存后进入新请求偏好。');
+      };
     });
     document.querySelectorAll('[data-data-dir-mode]').forEach(card => {
       card.onclick = () => setStorageMode(card.dataset.dataDirMode || 'system');
@@ -5042,10 +5135,22 @@ def render_desktop_html() -> str:
       button.onclick = () => {
         const next = Math.max(30, Math.min(1800, Number($('aiRequestTimeoutSeconds').value || 600) + Number(button.dataset.timeoutStep || 0)));
         $('aiRequestTimeoutSeconds').value = String(next);
+        markGeneralDirty('AI 请求超时已修改，保存后影响后续模型请求。');
       };
     });
     $('uiScale').addEventListener('input', () => {
       $('uiScaleValue').textContent = `${$('uiScale').value}%`;
+      document.documentElement.style.zoom = `${$('uiScale').value}%`;
+      markGeneralDirty('界面缩放已预览，保存后下次打开继续使用。');
+    });
+    [
+      'replyLanguage', 'thinkingEnabled', 'autoMemoryEnabled', 'traceEnabled',
+      'notificationsEnabled', 'requireCommandApproval', 'manualProxy',
+      'aiRequestTimeoutSeconds', 'webfetchPreflightSkip', 'tavilyApiKeyEnv',
+      'braveApiKeyEnv', 'portableDataDir'
+    ].forEach(id => {
+      const element = $(id);
+      if (element) element.addEventListener('change', () => markGeneralDirty());
     });
     $('saveGeneralSettings').onclick = saveGeneralSettings;
     $('saveH5Settings').onclick = saveH5Settings;

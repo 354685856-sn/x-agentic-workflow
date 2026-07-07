@@ -116,6 +116,9 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert 'id="uiScale"' in html
     assert 'data-send-mode="enter"' in html
     assert 'data-theme="pure"' in html
+    assert "body.theme-dark" in html
+    assert "applyTheme" in html
+    assert "markGeneralDirty" in html
     assert 'id="replyLanguage"' in html
     assert 'data-output-style="review"' in html
     assert 'data-permission-mode="skip"' in html
