@@ -39,6 +39,108 @@ MEMORY_PREVIEW_CHARS = 12_000
 MEMORY_SCAN_LIMIT = 120
 COMMAND_TIMEOUT_SECONDS = 120
 
+PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
+    "deepseek": {
+        "displayName": "DeepSeek",
+        "provider": "anthropic",
+        "protocolLabel": "DeepSeek",
+        "model": "deepseek-v4-pro",
+        "baseUrl": "https://api.deepseek.com/anthropic",
+        "apiKeyEnv": "ANTHROPIC_AUTH_TOKEN",
+        "authLabel": "Bearer Token (ANTHROPIC_AUTH_TOKEN)",
+        "note": "",
+        "toolSearchEnabled": True,
+    },
+    "zhipu": {
+        "displayName": "Zhipu GLM",
+        "provider": "openai-compatible",
+        "protocolLabel": "OpenAI Compatible",
+        "model": "glm-4.5",
+        "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+        "apiKeyEnv": "ZHIPUAI_API_KEY",
+        "authLabel": "Bearer Token (ZHIPUAI_API_KEY)",
+        "note": "",
+        "toolSearchEnabled": True,
+    },
+    "kimi": {
+        "displayName": "Kimi",
+        "provider": "openai-compatible",
+        "protocolLabel": "OpenAI Compatible",
+        "model": "kimi-k2",
+        "baseUrl": "https://api.moonshot.cn/v1",
+        "apiKeyEnv": "MOONSHOT_API_KEY",
+        "authLabel": "Bearer Token (MOONSHOT_API_KEY)",
+        "note": "",
+        "toolSearchEnabled": True,
+    },
+    "minimax": {
+        "displayName": "MiniMax",
+        "provider": "openai-compatible",
+        "protocolLabel": "OpenAI Responses",
+        "model": "MiniMax-M1",
+        "baseUrl": "https://api.minimax.chat/v1",
+        "apiKeyEnv": "MINIMAX_API_KEY",
+        "authLabel": "Bearer Token (MINIMAX_API_KEY)",
+        "note": "",
+        "toolSearchEnabled": True,
+    },
+    "lmstudio": {
+        "displayName": "LM Studio",
+        "provider": "openai-compatible",
+        "protocolLabel": "OpenAI Compatible",
+        "model": "local-model",
+        "baseUrl": "http://127.0.0.1:1234/v1",
+        "apiKeyEnv": "LM_STUDIO_API_KEY",
+        "authLabel": "Bearer Token (LM_STUDIO_API_KEY)",
+        "note": "本机模型服务。",
+        "toolSearchEnabled": False,
+    },
+    "ollama": {
+        "displayName": "Ollama",
+        "provider": "openai-compatible",
+        "protocolLabel": "OpenAI Compatible",
+        "model": "qwen2.5-coder",
+        "baseUrl": "http://127.0.0.1:11434/v1",
+        "apiKeyEnv": "OLLAMA_API_KEY",
+        "authLabel": "Bearer Token (OLLAMA_API_KEY)",
+        "note": "本机 Ollama OpenAI-compatible 端点。",
+        "toolSearchEnabled": False,
+    },
+    "custom": {
+        "displayName": "Custom",
+        "provider": "openai-compatible",
+        "protocolLabel": "Custom",
+        "model": "",
+        "baseUrl": "",
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "authLabel": "Bearer Token (OPENAI_API_KEY)",
+        "note": "",
+        "toolSearchEnabled": True,
+    },
+    "jiekouai": {
+        "displayName": "接口AI",
+        "provider": "openai-compatible",
+        "protocolLabel": "OpenAI Compatible",
+        "model": "",
+        "baseUrl": "",
+        "apiKeyEnv": "JIEKOUAI_API_KEY",
+        "authLabel": "Bearer Token (JIEKOUAI_API_KEY)",
+        "note": "",
+        "toolSearchEnabled": True,
+    },
+    "siliconflow": {
+        "displayName": "硅基云",
+        "provider": "openai-compatible",
+        "protocolLabel": "OpenAI Compatible",
+        "model": "deepseek-ai/DeepSeek-V3",
+        "baseUrl": "https://api.siliconflow.cn/v1",
+        "apiKeyEnv": "SILICONFLOW_API_KEY",
+        "authLabel": "Bearer Token (SILICONFLOW_API_KEY)",
+        "note": "",
+        "toolSearchEnabled": True,
+    },
+}
+
 
 def run_desktop(
     config: RuntimeConfig | None = None,
@@ -125,6 +227,8 @@ class DesktopApp:
             "baseUrl": self.config.provider.base_url,
             "apiKeyEnv": self.config.provider.api_key_env,
             "apiKeyPresent": bool(self.config.api_key),
+            "providerProfiles": self._provider_profiles_state(),
+            "providerPresets": self._provider_presets_state(),
             "workdir": str(self.config.workdir),
             "sessionId": self.agent.session_id,
             "sessions": list(reversed(self.sessions.list_sessions()[-8:])),
@@ -227,6 +331,20 @@ class DesktopApp:
         self.config.provider.model = model
         self.config.provider.base_url = base_url
         self.config.provider.api_key_env = api_key_env
+        self._upsert_active_provider_profile(
+            {
+                "displayName": "Anthropic"
+                if provider_name == "anthropic"
+                else "OpenAI-compatible",
+                "provider": provider_name,
+                "protocolLabel": provider_name,
+                "model": model,
+                "baseUrl": base_url,
+                "apiKeyEnv": api_key_env,
+                "note": "",
+                "toolSearchEnabled": True,
+            }
+        )
         self.config.save()
         self.agent = self._new_agent(session_id=self.agent.session_id)
         return {
@@ -236,6 +354,196 @@ class DesktopApp:
                 "message": f"Saved provider settings to {self.config.config_file}. Secret value was not stored.",
             },
         }
+
+    def add_provider_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            profile = self._profile_from_payload(payload)
+        except ValueError as exc:
+            return {**self.state(), "providerSave": {"ok": False, "message": str(exc)}}
+        self._upsert_active_provider_profile(profile)
+        self.config.provider.name = cast(Any, profile["provider"])
+        self.config.provider.model = str(profile["model"])
+        self.config.provider.base_url = cast(str | None, profile.get("baseUrl") or None)
+        self.config.provider.api_key_env = str(profile["apiKeyEnv"])
+        self.config.save()
+        self.agent = self._new_agent(session_id=self.agent.session_id)
+        return {
+            **self.state(),
+            "providerSave": {
+                "ok": True,
+                "message": f"已添加 {profile['displayName']}，并设为默认服务商。密钥值没有写入配置文件。",
+            },
+        }
+
+    def select_provider_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        profile_id = str(payload.get("id", "")).strip()
+        for profile in self._stored_provider_profiles():
+            if str(profile.get("id", "")) != profile_id:
+                continue
+            self.config.provider.name = cast(Any, profile.get("provider", "anthropic"))
+            self.config.provider.model = str(profile.get("model", "")).strip()
+            self.config.provider.base_url = cast(str | None, profile.get("baseUrl") or None)
+            self.config.provider.api_key_env = str(profile.get("apiKeyEnv", "")).strip()
+            if not self.config.provider.model or not self.config.provider.api_key_env:
+                return {
+                    **self.state(),
+                    "providerSave": {"ok": False, "message": "这个服务商配置不完整，不能设为默认。"},
+                }
+            self.config.save()
+            self.agent = self._new_agent(session_id=self.agent.session_id)
+            return {
+                **self.state(),
+                "providerSave": {"ok": True, "message": f"已切换默认服务商：{profile.get('displayName', profile_id)}。"},
+            }
+        return {**self.state(), "providerSave": {"ok": False, "message": "未找到这个服务商。"}}
+
+    def _provider_presets_state(self) -> list[dict[str, Any]]:
+        return [
+            {"id": preset_id, **preset}
+            for preset_id, preset in PROVIDER_PRESETS.items()
+        ]
+
+    def _stored_provider_profiles(self) -> list[dict[str, Any]]:
+        profiles = [
+            self._normalize_provider_profile(profile)
+            for profile in self.config.provider_profiles
+            if isinstance(profile, dict)
+        ]
+        active_id = self._active_provider_id()
+        if not any(profile["id"] == active_id for profile in profiles):
+            profiles.insert(
+                0,
+                self._normalize_provider_profile(
+                    {
+                        "id": active_id,
+                        "displayName": self._active_provider_display_name(),
+                        "provider": self.config.provider.name,
+                        "protocolLabel": self.config.provider.name,
+                        "model": self.config.provider.model,
+                        "baseUrl": self.config.provider.base_url,
+                        "apiKeyEnv": self.config.provider.api_key_env,
+                        "note": "",
+                        "toolSearchEnabled": True,
+                    }
+                ),
+            )
+        return profiles
+
+    def _provider_profiles_state(self) -> list[dict[str, Any]]:
+        saved = self._stored_provider_profiles()
+        saved_names = {str(profile["displayName"]).lower() for profile in saved}
+        active_id = self._active_provider_id()
+        items = []
+        for profile in saved:
+            item = dict(profile)
+            item["active"] = profile["id"] == active_id
+            item["apiKeyPresent"] = bool(os.environ.get(str(profile["apiKeyEnv"]), "").strip())
+            item["presetOnly"] = False
+            items.append(item)
+        for preset_id, preset in PROVIDER_PRESETS.items():
+            if str(preset["displayName"]).lower() in saved_names:
+                continue
+            items.append(
+                {
+                    "id": f"preset:{preset_id}",
+                    **preset,
+                    "active": False,
+                    "apiKeyPresent": bool(os.environ.get(str(preset["apiKeyEnv"]), "").strip()),
+                    "presetOnly": True,
+                }
+            )
+        return items[:8]
+
+    def _profile_from_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        preset_id = str(payload.get("presetId", "")).strip()
+        preset = PROVIDER_PRESETS.get(preset_id, {})
+        display_name = str(payload.get("displayName", preset.get("displayName", ""))).strip()
+        provider_name = str(payload.get("provider", preset.get("provider", "openai-compatible"))).strip()
+        model = str(payload.get("model", preset.get("model", ""))).strip()
+        base_url = str(payload.get("baseUrl", preset.get("baseUrl", ""))).strip()
+        api_key_env = str(payload.get("apiKeyEnv", preset.get("apiKeyEnv", ""))).strip()
+        protocol_label = str(
+            payload.get("protocolLabel", preset.get("protocolLabel", provider_name))
+        ).strip()
+        if provider_name not in {"anthropic", "openai-compatible"}:
+            raise ValueError(f"Unsupported provider: {provider_name}")
+        if not display_name:
+            raise ValueError("名称不能为空。")
+        if not model:
+            raise ValueError("模型不能为空。")
+        if not api_key_env:
+            raise ValueError("认证变量不能为空。")
+        if provider_name == "openai-compatible" and not base_url:
+            raise ValueError("OpenAI-compatible 服务商必须填写接口地址。")
+        return self._normalize_provider_profile(
+            {
+                "id": _provider_profile_id(display_name, base_url, model),
+                "displayName": display_name,
+                "provider": provider_name,
+                "protocolLabel": protocol_label,
+                "model": model,
+                "baseUrl": base_url or None,
+                "apiKeyEnv": api_key_env,
+                "authLabel": str(
+                    payload.get("authLabel", preset.get("authLabel", f"Bearer Token ({api_key_env})"))
+                ),
+                "note": str(payload.get("note", preset.get("note", ""))).strip(),
+                "toolSearchEnabled": bool(
+                    payload.get("toolSearchEnabled", preset.get("toolSearchEnabled", True))
+                ),
+            }
+        )
+
+    def _normalize_provider_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        display_name = str(profile.get("displayName") or profile.get("name") or "Provider").strip()
+        provider_name = str(profile.get("provider", profile.get("name", self.config.provider.name)))
+        if provider_name not in {"anthropic", "openai-compatible"}:
+            provider_name = "openai-compatible"
+        model = str(profile.get("model", "")).strip()
+        base_url = profile.get("baseUrl", profile.get("base_url"))
+        base_url = str(base_url).strip() if base_url else None
+        api_key_env = str(profile.get("apiKeyEnv", profile.get("api_key_env", ""))).strip()
+        profile_id = str(profile.get("id") or _provider_profile_id(display_name, base_url, model))
+        protocol_label = str(profile.get("protocolLabel", provider_name)).strip()
+        return {
+            "id": profile_id,
+            "displayName": display_name,
+            "provider": provider_name,
+            "protocolLabel": protocol_label,
+            "model": model,
+            "baseUrl": base_url,
+            "apiKeyEnv": api_key_env,
+            "authLabel": str(profile.get("authLabel", f"Bearer Token ({api_key_env})")),
+            "note": str(profile.get("note", "")).strip(),
+            "toolSearchEnabled": bool(profile.get("toolSearchEnabled", True)),
+        }
+
+    def _upsert_active_provider_profile(self, profile: dict[str, Any]) -> None:
+        normalized = self._normalize_provider_profile(profile)
+        profiles = [
+            existing
+            for existing in self._stored_provider_profiles()
+            if existing["id"] != normalized["id"]
+        ]
+        profiles.insert(0, normalized)
+        self.config.provider_profiles = profiles[:12]
+
+    def _active_provider_id(self) -> str:
+        return _provider_profile_id(
+            self._active_provider_display_name(),
+            self.config.provider.base_url,
+            self.config.provider.model,
+        )
+
+    def _active_provider_display_name(self) -> str:
+        if self.config.provider.base_url:
+            for preset in PROVIDER_PRESETS.values():
+                if (
+                    preset.get("baseUrl") == self.config.provider.base_url
+                    and preset.get("model") == self.config.provider.model
+                ):
+                    return str(preset["displayName"])
+        return "Anthropic" if self.config.provider.name == "anthropic" else "OpenAI-compatible"
 
     def save_general_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         approval = payload.get("requireCommandApproval")
@@ -904,6 +1212,59 @@ class DesktopApp:
             "remote": remote,
         }
 
+    def add_mcp_server(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name", "")).strip()
+        scope = str(payload.get("scope", "project-private")).strip()
+        transport = str(payload.get("transport", "stdio")).strip()
+        command = str(payload.get("command", "")).strip()
+        url = str(payload.get("url", "")).strip()
+        args = payload.get("args", [])
+        env_keys = payload.get("envKeys", [])
+        if not name:
+            return {**self.state(), "mcpAdd": {"ok": False, "message": "MCP 服务名称不能为空。"}}
+        if transport not in {"stdio", "streamable-http", "sse"}:
+            return {**self.state(), "mcpAdd": {"ok": False, "message": "MCP 传输类型无效。"}}
+        if transport == "stdio" and not command:
+            return {**self.state(), "mcpAdd": {"ok": False, "message": "STDIO MCP 必须填写启动命令。"}}
+        if transport != "stdio" and not url:
+            return {**self.state(), "mcpAdd": {"ok": False, "message": "远程 MCP 必须填写 URL。"}}
+        if not isinstance(args, list):
+            args = []
+        if not isinstance(env_keys, list):
+            env_keys = []
+        spec: dict[str, Any] = {"transport": transport}
+        if transport == "stdio":
+            spec["command"] = command
+            spec["args"] = [str(arg).strip() for arg in args if str(arg).strip()]
+        else:
+            spec["url"] = url
+        env = {str(key).strip(): "" for key in env_keys if str(key).strip()}
+        if env:
+            spec["env"] = env
+        try:
+            self.config.mcp_config_file.parent.mkdir(parents=True, exist_ok=True)
+            data: dict[str, Any] = {}
+            if self.config.mcp_config_file.exists():
+                data = json.loads(self.config.mcp_config_file.read_text(encoding="utf-8"))
+            raw_servers = data.get("mcpServers")
+            if not isinstance(raw_servers, dict):
+                raw_servers = data.get("servers")
+            if not isinstance(raw_servers, dict):
+                raw_servers = {}
+            raw_servers[name] = spec
+            data["mcpServers"] = raw_servers
+            data["scope"] = scope
+            self.config.mcp_config_file.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        except (OSError, TypeError, json.JSONDecodeError) as exc:
+            return {**self.state(), "mcpAdd": {"ok": False, "message": str(exc)}}
+        return {
+            **self.state(),
+            "mcpAdd": {"ok": True, "message": f"已写入 MCP 服务：{name}。"},
+        }
+
     def _agents_settings_state(self) -> dict[str, Any]:
         roles = [
             {
@@ -1086,6 +1447,12 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
             if self.path == "/api/provider":
                 self._send_json(app.save_provider_settings(payload))
                 return
+            if self.path == "/api/provider/add":
+                self._send_json(app.add_provider_profile(payload))
+                return
+            if self.path == "/api/provider/select":
+                self._send_json(app.select_provider_profile(payload))
+                return
             if self.path == "/api/test-provider":
                 self._send_json(app.test_provider_settings(payload))
                 return
@@ -1094,6 +1461,9 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/api/settings/h5":
                 self._send_json(app.save_h5_settings(payload))
+                return
+            if self.path == "/api/mcp/add":
+                self._send_json(app.add_mcp_server(payload))
                 return
             if self.path == "/api/terminal/probe":
                 self._send_json(app.terminal_probe())
@@ -1187,6 +1557,14 @@ def _redact_secret_match(match: re.Match[str]) -> str:
         key, _, _value = text.partition("=")
         return f"{key}=[REDACTED]"
     return "[REDACTED]"
+
+
+def _provider_profile_id(display_name: str, base_url: str | None, model: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", display_name.lower()).strip("-") or "provider"
+    digest = hashlib.sha1(
+        f"{display_name}|{base_url or ''}|{model}".encode()
+    ).hexdigest()[:8]
+    return f"{slug}-{digest}"
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -2046,6 +2424,83 @@ def render_desktop_html() -> str:
       margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; word-break: break-word;
       color: #2c3440; font-size: 14px; line-height: 1.55; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    .settings-layout { grid-template-columns: 220px 1fr; min-height: calc(100vh - 56px); }
+    .settings-nav { padding: 22px 0; background: #fff; }
+    .settings-nav button {
+      min-height: 54px; padding: 0 26px; border-radius: 0; font-size: 16px; gap: 14px;
+    }
+    .settings-nav button.active {
+      background: #eef3f9; color: #111827; box-shadow: inset 2px 0 0 #d18a00; font-weight: 760;
+    }
+    .settings-panel { max-width: 980px; padding: 30px 44px 56px; }
+    .settings-head { margin-bottom: 22px; }
+    .settings-title { font-size: 24px; line-height: 1.2; }
+    .settings-subtitle { font-size: 16px; line-height: 1.45; max-width: 760px; }
+    .primary-btn, .secondary-btn { border-radius: 8px; font-size: 15px; }
+    .provider-toolbar { display: flex; justify-content: flex-end; margin-bottom: 18px; }
+    .provider-list { gap: 12px; }
+    .provider-card {
+      grid-template-columns: 26px 16px minmax(0, 1fr) auto; min-height: 74px;
+      padding: 14px 20px; border-radius: 8px; text-align: left;
+    }
+    .provider-card.preset-only { opacity: .82; }
+    .provider-name { font-size: 17px; gap: 8px; }
+    .provider-meta { font-size: 14px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .provider-card-action { color: #a5543a; font-weight: 760; font-size: 13px; }
+    .provider-modal { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; background: rgba(15, 23, 42, .42); }
+    .provider-modal.active { display: flex; }
+    .provider-dialog {
+      width: min(920px, calc(100vw - 44px)); max-height: min(820px, calc(100vh - 44px)); overflow: auto;
+      background: rgba(255,255,255,.96); border: 1px solid #dce3ec; border-radius: 14px; box-shadow: 0 28px 80px rgba(15,23,42,.22);
+      padding: 28px;
+    }
+    .provider-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 24px; }
+    .provider-dialog-title { color: #111827; font-size: 26px; font-weight: 840; }
+    .icon-btn { border: 0; background: transparent; color: #536172; font-size: 30px; cursor: pointer; line-height: 1; }
+    .preset-pills { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; padding-bottom: 14px; border-bottom: 1px solid #e5ebf2; }
+    .preset-pill {
+      height: 44px; padding: 0 18px; border: 1px solid #d9e1ec; border-radius: 999px; background: white;
+      color: #4b5563; font: inherit; font-weight: 720; cursor: pointer;
+    }
+    .preset-pill.active { border-color: #a5543a; color: #a5543a; box-shadow: 0 0 0 3px #f2ebe8; }
+    .provider-dialog-grid { display: grid; gap: 18px; }
+    .provider-dialog-grid .field input, .provider-dialog-grid .field select {
+      height: 54px; border-radius: 8px; font-size: 18px;
+    }
+    .provider-toggle-row {
+      display: flex; gap: 14px; align-items: flex-start; border: 1px solid #dfe6ef; border-radius: 8px; padding: 18px; background: #fbfcfe;
+    }
+    .provider-toggle-row input { width: 22px; height: 22px; accent-color: #a5543a; }
+    .provider-dialog-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 26px; }
+    .h5-card-copy { color: #7a8798; font-size: 15px; line-height: 1.55; }
+    .h5-grid { grid-template-columns: minmax(0, 1fr) 180px 150px; }
+    .mcp-settings-page { display: block; }
+    .mcp-settings-page.form-mode .mcp-list-view { display: none; }
+    .mcp-settings-page:not(.form-mode) .mcp-form-view { display: none; }
+    .mcp-form-card { border: 1px solid #dfe6ef; border-radius: 8px; background: white; padding: 18px; display: grid; gap: 16px; }
+    .mcp-scope-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .mcp-scope-option {
+      border: 1px solid #dfe6ef; border-radius: 8px; background: white; padding: 16px; text-align: left; cursor: pointer;
+    }
+    .mcp-scope-option.active { border-color: #a5543a; background: #f8fbff; box-shadow: inset 0 0 0 1px rgba(165,84,58,.12); }
+    .mcp-transport-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #dfe6ef; border-radius: 8px; overflow: hidden; }
+    .mcp-transport-tabs button { height: 52px; border: 0; border-right: 1px solid #dfe6ef; background: white; font: inherit; font-weight: 760; cursor: pointer; }
+    .mcp-transport-tabs button:last-child { border-right: 0; }
+    .mcp-transport-tabs button.active { background: #eef3f9; color: #111827; }
+    .add-row-btn { height: 46px; border: 0; border-radius: 8px; background: #f0f3f7; color: #536172; font: inherit; font-weight: 760; cursor: pointer; }
+    .agents-hero { grid-template-columns: minmax(0, 1fr) repeat(3, 110px); padding: 20px 24px; }
+    .agent-icon { width: 26px; height: 26px; display: grid; place-items: center; color: #a5543a; font-size: 22px; }
+    .memory-explorer {
+      border: 1px solid #dfe6ef; border-radius: 8px; overflow: hidden; display: grid;
+      grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); min-height: 560px; background: white;
+    }
+    .memory-explorer-left { border-right: 1px solid #e7edf4; display: grid; grid-template-rows: auto auto 1fr; min-width: 0; }
+    .memory-explorer-head { padding: 18px; border-bottom: 1px solid #e7edf4; display: grid; gap: 4px; }
+    .memory-resource-title { padding: 14px 18px; border-bottom: 1px solid #e7edf4; color: #202633; font-weight: 820; }
+    .memory-explorer-search { padding: 14px 18px; border-bottom: 1px solid #e7edf4; }
+    .memory-explorer-right { min-width: 0; display: grid; grid-template-rows: auto auto 1fr; }
+    .memory-file-head { padding: 18px 22px; border-bottom: 1px solid #e7edf4; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+    .memory-file-tabs { padding: 12px 22px; border-bottom: 1px solid #e7edf4; color: #7a8798; font-weight: 760; }
     .memory-empty { border: 1px dashed #d8e0ea; border-radius: 8px; color: #7a8798; padding: 22px; background: #fbfcfe; }
     .setting-card {
       border: 1px solid #dfe6ef; border-radius: 8px; padding: 16px 18px; background: #fbfcfe;
@@ -2211,6 +2666,31 @@ def render_desktop_html() -> str:
       padding: 0 22px; background: rgba(255,255,255,.78);
     }
     .account-card:hover { border-color: #e5a400; background: #fff; }
+    .brand { padding: 14px 18px 22px; }
+    .logo { width: 36px; height: 36px; font-size: 18px; }
+    .brand-left { font-size: 15px; gap: 10px; }
+    .brand-action { width: 30px; height: 30px; font-size: 20px; }
+    .github-mark { width: 24px; height: 24px; }
+    .main-nav { padding: 0 30px 22px; gap: 14px; }
+    .main-nav button { min-height: 34px; gap: 16px; font-size: 17px; font-weight: 520; }
+    .nav-icon { width: 24px; font-size: 24px; }
+    .nav-icon.clock-icon { width: 24px; height: 24px; border-width: 2px; }
+    .nav-icon.clock-icon::before { left: 10px; top: 5px; width: 2px; height: 8px; }
+    .nav-icon.clock-icon::after { left: 10px; top: 12px; width: 7px; height: 2px; }
+    .sidebar-search-row { grid-template-columns: 1fr 46px 46px; gap: 8px; padding: 0 16px 26px; }
+    .search-shell { height: 46px; border-width: 1px; border-radius: 16px; padding: 0 12px 0 18px; }
+    .sidebar-search-row .session-search { height: 34px; font-size: 14px; }
+    .sidebar-tool-btn { width: 46px; height: 46px; border-width: 1px; border-radius: 14px; font-size: 20px; }
+    .sidebar-section { padding: 0 22px 0 24px; }
+    .side-heading { font-size: 15px; margin: 0 0 22px; }
+    .project-block { gap: 12px; margin-bottom: 28px; }
+    .project-header { font-size: 16px; gap: 10px; }
+    .project-icon.folder-icon { width: 25px; height: 18px; border-width: 2px; border-radius: 5px; margin-right: 6px; }
+    .project-icon.folder-icon::before { top: -8px; width: 14px; height: 8px; border-width: 2px; }
+    .conversation-row { margin-left: 40px; min-height: 34px; font-size: 14px; font-weight: 520; }
+    .conversation-row.active { margin-left: 40px; }
+    .session-meta, .relative-age { font-size: 12px; }
+    .account-card { min-height: 52px; border-radius: 14px; padding: 0 18px; }
     .settings-gear { font-size: 32px; color: #111827; line-height: 1; }
     .account-title { font-size: 20px; font-weight: 760; color: #111827; white-space: nowrap; }
     .account-chevron { display: none; }
@@ -2515,44 +2995,67 @@ def render_desktop_html() -> str:
               <div class="settings-head">
                 <div>
                   <div class="settings-title">服务商</div>
-                  <div class="settings-subtitle">管理 API 服务商以访问模型。密钥只保存在本机环境变量或后续钥匙串方案中。</div>
+                  <div class="settings-subtitle">管理 API 服务商以访问模型。</div>
                 </div>
-                <div class="provider-save-status" id="providerSaveStatus">已保存</div>
+                <button class="primary-btn" id="openProviderModal">＋ 添加服务商</button>
               </div>
-              <div class="provider-form">
-                <div class="field">
-                  <label for="providerName">服务商协议</label>
-                  <select id="providerName">
-                    <option value="anthropic">Anthropic</option>
-                    <option value="openai-compatible">OpenAI-compatible</option>
-                  </select>
+              <div class="settings-result" id="providerResult">密钥值不会写入配置文件；这里只保存环境变量名、模型和接口地址。</div>
+              <div class="provider-list" id="providerList"></div>
+              <div class="provider-modal" id="providerModal" aria-hidden="true">
+                <div class="provider-dialog">
+                  <div class="provider-dialog-head">
+                    <div class="provider-dialog-title">添加服务商</div>
+                    <button class="icon-btn" id="closeProviderModal" title="关闭">×</button>
+                  </div>
+                  <div class="preset-pills" id="providerPresetPills"></div>
+                  <div class="provider-dialog-grid">
+                    <div class="field">
+                      <label for="providerDisplayName">名称 *</label>
+                      <input id="providerDisplayName" placeholder="DeepSeek" />
+                    </div>
+                    <div class="field">
+                      <label for="providerNote">备注</label>
+                      <input id="providerNote" placeholder="可选备注..." />
+                    </div>
+                    <div class="field">
+                      <label for="providerBaseUrl">接口地址 *</label>
+                      <input id="providerBaseUrl" placeholder="https://api.deepseek.com/anthropic" />
+                    </div>
+                    <div class="field">
+                      <label for="providerAuthLabel">认证变量</label>
+                      <select id="providerAuthLabel">
+                        <option value="ANTHROPIC_AUTH_TOKEN">Bearer Token (ANTHROPIC_AUTH_TOKEN)</option>
+                        <option value="ANTHROPIC_API_KEY">Bearer Token (ANTHROPIC_API_KEY)</option>
+                        <option value="OPENAI_API_KEY">Bearer Token (OPENAI_API_KEY)</option>
+                        <option value="DEEPSEEK_API_KEY">Bearer Token (DEEPSEEK_API_KEY)</option>
+                        <option value="SILICONFLOW_API_KEY">Bearer Token (SILICONFLOW_API_KEY)</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="providerProtocol">协议</label>
+                      <select id="providerProtocol">
+                        <option value="anthropic">Anthropic</option>
+                        <option value="openai-compatible">OpenAI-compatible</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="providerModel">模型 *</label>
+                      <input id="providerModel" placeholder="deepseek-v4-pro" />
+                    </div>
+                    <div class="provider-toggle-row">
+                      <input type="checkbox" id="providerToolSearch" />
+                      <div>
+                        <div class="setting-name">启用 Tool Search</div>
+                        <div class="setting-help">按需加载 MCP 和延迟工具，减少首轮工具 schema token。弱模型或不支持 tool_reference 的服务商可以关闭。</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="provider-dialog-actions">
+                    <button class="secondary-btn" id="cancelProviderModal">取消</button>
+                    <button class="primary-btn" id="addProviderProfile">添加</button>
+                  </div>
                 </div>
-                <div class="field">
-                  <label for="providerModel">模型</label>
-                  <input id="providerModel" placeholder="claude-3-5-sonnet-latest" />
-                </div>
-                <div class="field">
-                  <label for="providerKeyEnv">API key 环境变量</label>
-                  <input id="providerKeyEnv" placeholder="ANTHROPIC_API_KEY" />
-                </div>
-                <div class="field wide">
-                  <label for="providerBaseUrl">Base URL（OpenAI-compatible 可选）</label>
-                  <input id="providerBaseUrl" placeholder="https://api.openai.com/v1" />
-                </div>
-                <div class="provider-actions">
-                  <button class="secondary-btn" id="testProvider">测试连接</button>
-                  <button class="primary-btn" id="saveProvider">保存默认服务商</button>
-                </div>
-                <div class="settings-result" id="providerResult">密钥值不会写入配置文件；这里只保存环境变量名、模型和 base URL。</div>
               </div>
-              <div class="provider-list">
-                <div class="provider-card default" id="savedProviderCard">
-                  <div class="drag">⋮⋮</div><div class="status-dot" id="savedProviderDot"></div>
-                  <div><div class="provider-name"><span id="savedProviderName">Provider</span> <span class="badge" id="savedProviderProtocol">protocol</span><span class="badge hot">默认</span></div><div class="provider-meta" id="savedProviderMeta"></div></div>
-                  <span></span>
-                </div>
-              </div>
-              <div class="settings-note">密钥值不会写入配置文件。当前表单已接入服务商保存和连接测试；后续补安全的系统钥匙串存储。</div>
             </div>
             <div class="settings-panel" id="generalSettingsPanel">
               <div class="settings-head">
@@ -2620,33 +3123,32 @@ def render_desktop_html() -> str:
                     <div class="setting-row">
                       <div class="setting-copy">
                         <div class="setting-name">启用 H5 访问</div>
-                        <div class="setting-help">开启后，下次启动会按这里保存的主机和端口启动桌面服务。</div>
+                        <div class="setting-help">桌面服务会监听局域网地址，并开放桌面会话相关能力。</div>
                       </div>
                       <label class="toggle-control"><input type="checkbox" id="h5Enabled" /><span></span></label>
                     </div>
+                    <div class="h5-grid">
+                      <div class="field">
+                        <label for="h5BindHost">访问主机 / IP</label>
+                        <select id="h5BindHost">
+                          <option value="127.0.0.1">127.0.0.1（仅本机）</option>
+                          <option value="0.0.0.0">0.0.0.0（局域网）</option>
+                        </select>
+                      </div>
+                      <div class="field">
+                        <label for="h5FixedPort">固定端口</label>
+                        <input id="h5FixedPort" inputmode="numeric" placeholder="自动" />
+                      </div>
+                      <div class="field">
+                        <label for="h5Keepalive">断连保活（秒）</label>
+                        <input id="h5Keepalive" inputmode="numeric" placeholder="30" />
+                      </div>
+                    </div>
+                    <p class="h5-card-copy">手机锁屏或切后台导致断连后，正在执行的任务不会被打断，会在后台跑完，重连即可看到结果；只有任务空闲且无人连接时才在此时长后停止 CLI（默认 30 秒）。出门远程操作可调大，例如 600。</p>
+                    <p class="h5-card-copy">普通局域网访问只改主机 / IP，端口使用当前服务端口。反向代理可直接填完整 URL。不设固定端口时会自动复用上次的端口；反向代理等需要稳定端口的场景建议固定。修改端口后重启应用生效。</p>
+                    <p class="h5-card-copy">只在可信网络中启用。拿到二维码链接的人可以访问 H5 暴露的桌面能力。</p>
                     <div class="h5-status"><span>当前端口</span><strong id="h5CurrentPort">-</strong><span id="h5RestartStatus"></span></div>
                     <a class="h5-link" id="h5CurrentUrl" href="#" target="_blank" rel="noreferrer">当前服务未启动</a>
-                  </div>
-                </section>
-                <section class="general-section">
-                  <h3>连接设置</h3>
-                  <p>普通本机访问使用 127.0.0.1；要让手机访问，启动时应监听 0.0.0.0，并确保同一局域网可达。</p>
-                  <div class="setting-card h5-grid">
-                    <div class="field">
-                      <label for="h5BindHost">访问主机 / IP</label>
-                      <select id="h5BindHost">
-                        <option value="127.0.0.1">127.0.0.1（仅本机）</option>
-                        <option value="0.0.0.0">0.0.0.0（局域网）</option>
-                      </select>
-                    </div>
-                    <div class="field">
-                      <label for="h5FixedPort">固定端口</label>
-                      <input id="h5FixedPort" inputmode="numeric" placeholder="自动" />
-                    </div>
-                    <div class="field">
-                      <label for="h5Keepalive">断连保活（秒）</label>
-                      <input id="h5Keepalive" inputmode="numeric" placeholder="30" />
-                    </div>
                   </div>
                 </section>
                 <div class="general-actions">
@@ -2697,34 +3199,94 @@ def render_desktop_html() -> str:
               </div>
             </div>
             <div class="settings-panel" id="mcpSettingsPanel">
-              <div class="settings-head">
-                <div>
-                  <div class="settings-title">MCP</div>
-                  <div class="settings-subtitle">读取本机 MCP 配置，展示当前会注入到 Agent 上下文的服务定义。</div>
+              <div class="mcp-settings-page" id="mcpSettingsPage">
+                <div class="mcp-list-view">
+                  <div class="settings-head">
+                    <div>
+                      <div class="settings-title">MCP 服务</div>
+                      <div class="settings-subtitle">在桌面端直接管理外部工具与数据源。Local、Project、User 三种范围与 CLI 保持一致。</div>
+                    </div>
+                    <button class="secondary-btn" id="openMcpAddView">＋ 添加服务</button>
+                  </div>
+                  <div class="general-sections">
+                    <section class="general-section">
+                      <div class="mcp-summary-grid">
+                        <div class="mcp-stat"><span>服务总数</span><strong id="mcpTotal">0</strong></div>
+                        <div class="mcp-stat"><span>STDIO</span><strong id="mcpStdio">0</strong></div>
+                        <div class="mcp-stat"><span>远程 URL</span><strong id="mcpRemote">0</strong></div>
+                      </div>
+                    </section>
+                    <section class="general-section">
+                      <h3>已配置服务</h3>
+                      <div class="mcp-config-path" id="mcpConfigFile">-</div>
+                      <div class="settings-result" id="mcpResult"></div>
+                      <div class="mcp-list" id="mcpServerList"></div>
+                    </section>
+                  </div>
                 </div>
-                <button class="secondary-btn" id="refreshMcpSettings">刷新</button>
-              </div>
-              <div class="general-sections">
-                <section class="general-section">
-                  <h3>MCP 配置文件</h3>
-                  <p>当前版本只读取和展示配置，不启动外部 MCP 进程，也不写入密钥值。</p>
-                  <div class="setting-card">
-                    <div class="mcp-config-path" id="mcpConfigFile">-</div>
-                    <div class="settings-result" id="mcpResult"></div>
+                <div class="mcp-form-view">
+                  <div class="settings-head">
+                    <div>
+                      <button class="secondary-btn" id="backToMcpList">← 返回服务列表</button>
+                      <div class="settings-title" style="margin-top:18px;">连接自定义 MCP</div>
+                      <div class="settings-subtitle">按当前 Claude Code 支持的字段添加一个自定义 MCP 服务。</div>
+                    </div>
                   </div>
-                </section>
-                <section class="general-section">
-                  <h3>服务概览</h3>
-                  <div class="mcp-summary-grid">
-                    <div class="mcp-stat"><span>服务总数</span><strong id="mcpTotal">0</strong></div>
-                    <div class="mcp-stat"><span>STDIO</span><strong id="mcpStdio">0</strong></div>
-                    <div class="mcp-stat"><span>远程 URL</span><strong id="mcpRemote">0</strong></div>
+                  <div class="general-sections">
+                    <section class="mcp-form-card">
+                      <div class="field">
+                        <label for="mcpAddName">名称 *</label>
+                        <input id="mcpAddName" placeholder="MCP 服务名称" />
+                      </div>
+                    </section>
+                    <section class="mcp-form-card">
+                      <div class="setting-name">配置范围</div>
+                      <div class="mcp-scope-grid">
+                        <button class="mcp-scope-option active" data-mcp-scope="project-private"><strong>项目私有</strong><br><span class="setting-help">只对你自己生效，但绑定到某一个项目。</span></button>
+                        <button class="mcp-scope-option" data-mcp-scope="project-shared"><strong>项目共享</strong><br><span class="setting-help">写入选中项目的 .mcp.json，项目成员共享。</span></button>
+                        <button class="mcp-scope-option" data-mcp-scope="user"><strong>全局用户</strong><br><span class="setting-help">写入你的全局 Claude 配置，对所有项目生效。</span></button>
+                      </div>
+                    </section>
+                    <section class="mcp-form-card">
+                      <div class="setting-name">目标项目</div>
+                      <div class="mcp-config-path" id="mcpTargetProject">-</div>
+                    </section>
+                    <section class="mcp-form-card">
+                      <div class="mcp-transport-tabs">
+                        <button class="active" data-mcp-transport="stdio">STDIO</button>
+                        <button data-mcp-transport="streamable-http">Streamable HTTP</button>
+                        <button data-mcp-transport="sse">SSE</button>
+                      </div>
+                    </section>
+                    <section class="mcp-form-card" id="mcpCommandBlock">
+                      <div class="field">
+                        <label for="mcpAddCommand">启动命令 *</label>
+                        <input id="mcpAddCommand" placeholder="npx" />
+                      </div>
+                      <div class="setting-help">STDIO MCP 命令会直接在宿主机上运行。像 Node.js、Python、Bun、uv 这类运行时需要用户自己安装，并确保这个命令在 PATH 里可用。</div>
+                    </section>
+                    <section class="mcp-form-card" id="mcpUrlBlock" style="display:none;">
+                      <div class="field">
+                        <label for="mcpAddUrl">服务 URL *</label>
+                        <input id="mcpAddUrl" placeholder="https://example.com/mcp" />
+                      </div>
+                    </section>
+                    <section class="mcp-form-card">
+                      <div class="setting-name">参数</div>
+                      <div id="mcpArgsList"></div>
+                      <button class="add-row-btn" id="addMcpArg">＋ 添加参数</button>
+                    </section>
+                    <section class="mcp-form-card">
+                      <div class="setting-name">环境变量</div>
+                      <div id="mcpEnvList"></div>
+                      <button class="add-row-btn" id="addMcpEnv">＋ 添加环境变量</button>
+                    </section>
+                    <div class="general-actions">
+                      <button class="primary-btn" id="saveMcpServer">保存服务</button>
+                      <div class="settings-result" id="mcpAddResult"></div>
+                    </div>
                   </div>
-                </section>
-                <section class="general-section">
-                  <h3>已配置服务</h3>
-                  <div class="mcp-list" id="mcpServerList"></div>
-                </section>
+                </div>
               </div>
             </div>
             <div class="settings-panel" id="agentsSettingsPanel">
@@ -2818,18 +3380,28 @@ def render_desktop_html() -> str:
                   </div>
                 </section>
                 <section class="general-section">
-                  <h3>记忆浏览器</h3>
-                  <div class="skills-toolbar">
-                    <input class="skills-search" id="memorySearch" placeholder="搜索记忆标题、摘要或路径..." />
-                    <span class="badge" id="memoryFilterCount">0</span>
-                  </div>
-                  <div class="memory-browser">
-                    <div class="memory-list" id="memoryList"></div>
-                    <div class="memory-preview">
-                      <div class="memory-preview-head">
-                        <div class="memory-preview-title" id="memoryPreviewTitle">选择一个记忆文件</div>
-                        <div class="memory-preview-path" id="memoryPreviewPath">只会读取预览片段。</div>
+                  <div class="memory-explorer">
+                    <div class="memory-explorer-left">
+                      <div class="memory-explorer-head">
+                        <div class="setting-name">项目记忆</div>
+                        <div class="setting-help">项目</div>
                       </div>
+                      <div class="memory-resource-title">资源管理器</div>
+                      <div class="memory-explorer-search">
+                        <input class="skills-search" id="memorySearch" placeholder="搜索项目或记忆文件..." />
+                        <span class="badge" id="memoryFilterCount">0</span>
+                      </div>
+                      <div class="memory-list" id="memoryList"></div>
+                    </div>
+                    <div class="memory-explorer-right">
+                      <div class="memory-file-head">
+                        <div>
+                          <div class="memory-preview-path" id="memoryPreviewPath">选择一个记忆文件</div>
+                          <div class="memory-preview-title" id="memoryPreviewTitle">暂无预览</div>
+                        </div>
+                        <button class="secondary-btn" id="refreshMemoryInline">刷新</button>
+                      </div>
+                      <div class="memory-file-tabs">预览&nbsp;&nbsp;已渲染</div>
                       <pre class="memory-content" id="memoryPreviewContent">暂无预览。</pre>
                     </div>
                   </div>
@@ -2910,13 +3482,16 @@ def render_desktop_html() -> str:
     const DRAFT_KEY_PREFIX = 'xaw:composer-draft:v1:';
     let pendingAttachments = [];
     let attachmentEpoch = 0;
-    let providerFormDirty = false;
     let providerSubmitting = false;
+    let providerPresets = [];
+    let selectedProviderPreset = 'deepseek';
     let currentDraftKey = '';
     let desktopSendMode = 'modifier-enter';
     let desktopNotificationsEnabled = false;
     let latestMemoryItems = [];
     let selectedMemoryId = '';
+    let mcpAddScope = 'project-private';
+    let mcpAddTransport = 'stdio';
     async function api(path, body) {
       const res = await fetch(path, { method: body ? 'POST' : 'GET', headers: {'content-type': 'application/json'}, body: body ? JSON.stringify(body) : undefined });
       return await res.json();
@@ -2945,6 +3520,7 @@ def render_desktop_html() -> str:
       renderGeneralSettings(state);
       renderH5Settings(state);
       renderTerminalSettings(state.terminalSettings || {}, state.terminalProbe);
+      $('mcpTargetProject').textContent = state.workdir;
       renderMcpSettings(state.mcpSettings || {});
       renderAgentsSettings(state.agentsSettings || {});
       renderSkillsSettings(state.skillsSettings || {});
@@ -2973,11 +3549,19 @@ def render_desktop_html() -> str:
       document.querySelectorAll('[data-diff-index]').forEach(btn => btn.onclick = async () => render(await api('/api/diff/select', {index: btn.dataset.diffIndex})));
     }
     function providerPayload() {
+      const apiKeyEnv = $('providerAuthLabel').value;
+      const preset = providerPresets.find(item => item.id === selectedProviderPreset) || {};
       return {
-        provider: $('providerName').value,
+        presetId: selectedProviderPreset,
+        displayName: $('providerDisplayName').value,
+        note: $('providerNote').value,
+        provider: $('providerProtocol').value,
         model: $('providerModel').value,
         baseUrl: $('providerBaseUrl').value,
-        apiKeyEnv: $('providerKeyEnv').value
+        apiKeyEnv,
+        authLabel: `Bearer Token (${apiKeyEnv})`,
+        protocolLabel: preset.protocolLabel || $('providerProtocol').value,
+        toolSearchEnabled: $('providerToolSearch').checked
       };
     }
     function draftKeyForState(state) {
@@ -3014,47 +3598,51 @@ def render_desktop_html() -> str:
       $('prompt').value = '';
     }
     function renderProviderState(state) {
-      if (!providerFormDirty || (state.providerSave && state.providerSave.ok)) {
-        $('providerName').value = state.provider;
-        $('providerModel').value = state.model;
-        $('providerBaseUrl').value = state.baseUrl || '';
-        $('providerKeyEnv').value = state.apiKeyEnv;
-        providerFormDirty = false;
+      providerPresets = state.providerPresets || [];
+      renderProviderPresetPills();
+      const list = $('providerList');
+      const profiles = state.providerProfiles || [];
+      if (!profiles.length) {
+        list.innerHTML = '<div class="mcp-empty">暂无服务商配置。</div>';
+        return;
       }
-      const displayName = state.provider === 'anthropic' ? 'Anthropic' : 'OpenAI-compatible';
-      $('savedProviderName').textContent = displayName;
-      $('savedProviderProtocol').textContent = state.provider;
-      $('savedProviderMeta').textContent = `${state.baseUrl || 'Default endpoint'} · ${state.model} · ${state.apiKeyEnv}`;
-      $('savedProviderDot').classList.toggle('on', !!state.apiKeyPresent);
-      const saveStatus = $('providerSaveStatus');
-      saveStatus.textContent = providerFormDirty
-        ? '未保存更改'
-        : state.apiKeyPresent ? '已保存 · 密钥可用' : '已保存 · 等待环境变量';
-      saveStatus.classList.toggle('dirty', providerFormDirty);
-    }
-    function markProviderDirty() {
-      providerFormDirty = true;
-      const saveStatus = $('providerSaveStatus');
-      saveStatus.textContent = '未保存更改';
-      saveStatus.classList.add('dirty');
+      list.innerHTML = profiles.map(profile => {
+        const active = profile.active ? ' default' : '';
+        const presetOnly = profile.presetOnly ? ' preset-only' : '';
+        const dot = profile.active || profile.apiKeyPresent ? ' on' : '';
+        const defaultBadge = profile.active ? '<span class="badge hot">默认</span>' : '';
+        const action = profile.presetOnly ? '<span class="provider-card-action">添加</span>' : '<span class="provider-card-action">设为默认</span>';
+        const meta = `${profile.baseUrl || 'Default endpoint'} · ${profile.model || '未配置模型'}`;
+        return `<button class="provider-card${active}${presetOnly}" data-provider-id="${escapeHtml(profile.id)}" data-preset-only="${profile.presetOnly ? '1' : '0'}" data-preset-name="${escapeHtml(profile.displayName || '')}">
+          <div class="drag">⋮⋮</div><div class="status-dot${dot}"></div>
+          <div><div class="provider-name"><span>${escapeHtml(profile.displayName || 'Provider')}</span><span class="badge">${escapeHtml(profile.protocolLabel || profile.provider || 'provider')}</span>${defaultBadge}</div><div class="provider-meta">${escapeHtml(meta)}</div></div>
+          ${action}
+        </button>`;
+      }).join('');
+      document.querySelectorAll('[data-provider-id]').forEach(button => {
+        button.onclick = async () => {
+          if (button.dataset.presetOnly === '1') {
+            const preset = providerPresets.find(item => item.displayName === button.dataset.presetName);
+            openProviderModal(preset ? preset.id : 'deepseek');
+            return;
+          }
+          render(await api('/api/provider/select', {id: button.dataset.providerId}));
+        };
+      });
     }
     function setProviderSubmitting(active, action) {
       providerSubmitting = active;
-      $('saveProvider').disabled = active;
-      $('testProvider').disabled = active;
-      $('saveProvider').textContent = active && action === 'save' ? '保存中...' : '保存默认服务商';
-      $('testProvider').textContent = active && action === 'test' ? '测试中...' : '测试连接';
+      $('addProviderProfile').disabled = active;
+      $('addProviderProfile').textContent = active && action === 'add' ? '添加中...' : '添加';
     }
     async function runProviderAction(action) {
       if (providerSubmitting) return;
       setProviderSubmitting(true, action);
-      showProviderResult({ok: true, message: action === 'save' ? '正在保存配置...' : '正在测试连接...'});
+      showProviderResult({ok: true, message: '正在添加服务商...'});
       try {
-        const path = action === 'save' ? '/api/provider' : '/api/test-provider';
+        const path = '/api/provider/add';
         const state = await api(path, providerPayload());
-        if (action === 'save' && state.providerSave && state.providerSave.ok) {
-          providerFormDirty = false;
-        }
+        if (state.providerSave && state.providerSave.ok) closeProviderModal();
         render(state);
       } finally {
         setProviderSubmitting(false, action);
@@ -3065,6 +3653,42 @@ def render_desktop_html() -> str:
       box.textContent = result.message;
       box.classList.toggle('ok', !!result.ok);
       box.classList.toggle('bad', !result.ok);
+    }
+    function renderProviderPresetPills() {
+      const box = $('providerPresetPills');
+      box.innerHTML = providerPresets.map(preset => {
+        const active = preset.id === selectedProviderPreset ? ' active' : '';
+        return `<button class="preset-pill${active}" data-provider-preset="${escapeHtml(preset.id)}">${escapeHtml(preset.displayName)}</button>`;
+      }).join('');
+      document.querySelectorAll('[data-provider-preset]').forEach(button => {
+        button.onclick = () => applyProviderPreset(button.dataset.providerPreset || 'deepseek');
+      });
+    }
+    function openProviderModal(presetId) {
+      $('providerModal').classList.add('active');
+      $('providerModal').setAttribute('aria-hidden', 'false');
+      applyProviderPreset(presetId || selectedProviderPreset || 'deepseek');
+    }
+    function closeProviderModal() {
+      $('providerModal').classList.remove('active');
+      $('providerModal').setAttribute('aria-hidden', 'true');
+    }
+    function applyProviderPreset(presetId) {
+      selectedProviderPreset = presetId;
+      const preset = providerPresets.find(item => item.id === presetId) || providerPresets[0] || {};
+      $('providerDisplayName').value = preset.displayName || '';
+      $('providerNote').value = preset.note || '';
+      $('providerBaseUrl').value = preset.baseUrl || '';
+      $('providerProtocol').value = preset.provider || 'openai-compatible';
+      $('providerModel').value = preset.model || '';
+      $('providerToolSearch').checked = preset.toolSearchEnabled !== false;
+      const apiKeyEnv = preset.apiKeyEnv || 'OPENAI_API_KEY';
+      const select = $('providerAuthLabel');
+      if (![...select.options].some(option => option.value === apiKeyEnv)) {
+        select.add(new Option(`Bearer Token (${apiKeyEnv})`, apiKeyEnv));
+      }
+      select.value = apiKeyEnv;
+      renderProviderPresetPills();
     }
     function renderGeneralSettings(state) {
       const settings = state.generalSettings || {};
@@ -3237,14 +3861,75 @@ def render_desktop_html() -> str:
       }).join('');
     }
     async function refreshMcpSettings() {
-      const button = $('refreshMcpSettings');
+      renderMcpSettings(await api('/api/mcp'));
+    }
+    function showMcpListView() {
+      $('mcpSettingsPage').classList.remove('form-mode');
+    }
+    function showMcpAddView() {
+      $('mcpSettingsPage').classList.add('form-mode');
+      if (!$('mcpArgsList').children.length) addMcpArgRow('');
+      if (!$('mcpEnvList').children.length) addMcpEnvRow('');
+    }
+    function addMcpArgRow(value) {
+      const row = document.createElement('div');
+      row.className = 'field';
+      row.innerHTML = `<input class="mcp-arg-input" placeholder="chrome-devtools-mcp@latest" value="${escapeHtml(value || '')}" />`;
+      $('mcpArgsList').appendChild(row);
+    }
+    function addMcpEnvRow(value) {
+      const row = document.createElement('div');
+      row.className = 'field';
+      row.innerHTML = `<input class="mcp-env-input" placeholder="环境变量名，例如 GITHUB_TOKEN" value="${escapeHtml(value || '')}" />`;
+      $('mcpEnvList').appendChild(row);
+    }
+    function setMcpTransport(transport) {
+      mcpAddTransport = transport;
+      document.querySelectorAll('[data-mcp-transport]').forEach(button => {
+        button.classList.toggle('active', button.dataset.mcpTransport === transport);
+      });
+      $('mcpCommandBlock').style.display = transport === 'stdio' ? 'grid' : 'none';
+      $('mcpUrlBlock').style.display = transport === 'stdio' ? 'none' : 'grid';
+    }
+    function setMcpScope(scope) {
+      mcpAddScope = scope;
+      document.querySelectorAll('[data-mcp-scope]').forEach(button => {
+        button.classList.toggle('active', button.dataset.mcpScope === scope);
+      });
+    }
+    function mcpAddPayload() {
+      return {
+        name: $('mcpAddName').value,
+        scope: mcpAddScope,
+        transport: mcpAddTransport,
+        command: $('mcpAddCommand').value,
+        url: $('mcpAddUrl').value,
+        args: [...document.querySelectorAll('.mcp-arg-input')].map(input => input.value.trim()).filter(Boolean),
+        envKeys: [...document.querySelectorAll('.mcp-env-input')].map(input => input.value.trim()).filter(Boolean)
+      };
+    }
+    async function saveMcpServer() {
+      const button = $('saveMcpServer');
       button.disabled = true;
-      button.textContent = '刷新中...';
+      button.textContent = '保存中...';
+      const result = $('mcpAddResult');
+      result.textContent = '正在写入本地 MCP 配置...';
+      result.classList.remove('bad');
+      result.classList.add('ok');
       try {
-        renderMcpSettings(await api('/api/mcp'));
+        const state = await api('/api/mcp/add', mcpAddPayload());
+        if (state.mcpAdd) {
+          result.textContent = state.mcpAdd.message;
+          result.classList.toggle('ok', !!state.mcpAdd.ok);
+          result.classList.toggle('bad', !state.mcpAdd.ok);
+          if (state.mcpAdd.ok) {
+            render(state);
+            showMcpListView();
+          }
+        }
       } finally {
         button.disabled = false;
-        button.textContent = '刷新';
+        button.textContent = '保存服务';
       }
     }
     function renderAgentsSettings(agentsState) {
@@ -3268,7 +3953,7 @@ def render_desktop_html() -> str:
         return;
       }
       list.innerHTML = roles.map(role => `<div class="agent-card">
-        <div class="agent-icon">▦</div>
+        <div class="agent-icon">🤖</div>
         <div>
           <div class="agent-name-row"><span class="agent-name">${escapeHtml(role.name || 'unnamed')}</span><span class="badge">${escapeHtml(role.status || '已生效')}</span><span class="badge">${escapeHtml(role.source || '本地')}</span></div>
           <div class="agent-instructions">${escapeHtml(role.instructions || '')}</div>
@@ -3715,12 +4400,13 @@ def render_desktop_html() -> str:
       const collapsed = app.classList.toggle('inspector-collapsed');
       $('inspectorToggle').title = collapsed ? '展开右侧栏' : '收起右侧栏';
     };
-    ['providerName', 'providerModel', 'providerBaseUrl', 'providerKeyEnv'].forEach(id => {
-      $(id).addEventListener('input', markProviderDirty);
-      $(id).addEventListener('change', markProviderDirty);
-    });
-    $('saveProvider').onclick = () => runProviderAction('save');
-    $('testProvider').onclick = () => runProviderAction('test');
+    $('openProviderModal').onclick = () => openProviderModal('deepseek');
+    $('closeProviderModal').onclick = closeProviderModal;
+    $('cancelProviderModal').onclick = closeProviderModal;
+    $('providerModal').onclick = event => {
+      if (event.target === $('providerModal')) closeProviderModal();
+    };
+    $('addProviderProfile').onclick = () => runProviderAction('add');
     document.querySelectorAll('[data-settings-view]').forEach(button => {
       button.onclick = () => {
         const view = button.dataset.settingsView;
@@ -3749,10 +4435,21 @@ def render_desktop_html() -> str:
     $('saveH5Settings').onclick = saveH5Settings;
     $('refreshTerminalSettings').onclick = refreshTerminalSettings;
     $('runTerminalProbe').onclick = runTerminalProbe;
-    $('refreshMcpSettings').onclick = refreshMcpSettings;
+    $('openMcpAddView').onclick = showMcpAddView;
+    $('backToMcpList').onclick = showMcpListView;
+    $('addMcpArg').onclick = () => addMcpArgRow('');
+    $('addMcpEnv').onclick = () => addMcpEnvRow('');
+    $('saveMcpServer').onclick = saveMcpServer;
+    document.querySelectorAll('[data-mcp-transport]').forEach(button => {
+      button.onclick = () => setMcpTransport(button.dataset.mcpTransport || 'stdio');
+    });
+    document.querySelectorAll('[data-mcp-scope]').forEach(button => {
+      button.onclick = () => setMcpScope(button.dataset.mcpScope || 'project-private');
+    });
     $('refreshAgentsSettings').onclick = refreshAgentsSettings;
     $('refreshSkillsSettings').onclick = refreshSkillsSettings;
     $('refreshMemorySettings').onclick = refreshMemorySettings;
+    $('refreshMemoryInline').onclick = refreshMemorySettings;
     $('skillsSearch').addEventListener('input', async () => {
       const state = await api('/api/skills');
       renderSkillsSettings(state);
