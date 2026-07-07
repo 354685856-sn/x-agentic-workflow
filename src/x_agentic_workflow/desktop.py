@@ -3205,6 +3205,356 @@ def render_desktop_html() -> str:
       border: 1px solid #dbe3ee; background: #fff; color: #667085; border-radius: 10px;
       height: 34px; padding: 0 12px; cursor: pointer;
     }
+    /* Settings visual system override: keep this block late so it wins over legacy shell styles. */
+    .app.settings-open {
+      grid-template-columns: 388px minmax(0, 1fr) 0;
+      background: #f7f9fc;
+    }
+    .app.settings-open .topbar {
+      height: 64px;
+      background: rgba(255, 255, 255, .92);
+      border-bottom: 1px solid #e7ebf1;
+      backdrop-filter: blur(18px);
+    }
+    .app.settings-open .settings-layout {
+      grid-template-columns: 248px minmax(0, 1fr);
+      width: 100%;
+      min-height: calc(100vh - 64px);
+      background: #ffffff;
+    }
+    .app.settings-open .settings-nav {
+      padding: 22px 0;
+      background: #fbfcfe;
+      border-right: 1px solid #e6ebf2;
+    }
+    .app.settings-open .settings-nav button {
+      min-height: 50px;
+      padding: 0 24px;
+      border-radius: 0;
+      color: #667085;
+      font-size: 15px;
+      font-weight: 620;
+      letter-spacing: 0;
+      transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+    }
+    .app.settings-open .settings-nav button span:first-child {
+      width: 22px;
+      color: #7b8492;
+      font-size: 18px;
+    }
+    .app.settings-open .settings-nav button.active {
+      background: #eef3f9;
+      color: #1d2530;
+      box-shadow: inset 2px 0 0 #d18a00;
+      font-weight: 760;
+    }
+    .app.settings-open .settings-nav button.active span:first-child { color: #1d2530; }
+    .app.settings-open .settings-panel {
+      max-width: 1040px;
+      padding: 38px 48px 72px;
+      color: #1d2530;
+    }
+    .app.settings-open .settings-head { margin-bottom: 30px; }
+    .app.settings-open .settings-title {
+      font-size: 26px;
+      line-height: 1.18;
+      font-weight: 820;
+      letter-spacing: 0;
+      color: #111827;
+    }
+    .app.settings-open .settings-subtitle {
+      margin-top: 10px;
+      max-width: 760px;
+      color: #7a8696;
+      font-size: 16px;
+      line-height: 1.55;
+      font-weight: 480;
+    }
+    .app.settings-open .general-sections {
+      gap: 34px;
+      padding-bottom: 58px;
+    }
+    .app.settings-open .general-section {
+      gap: 12px;
+      max-width: 880px;
+    }
+    .app.settings-open .general-section h3 {
+      margin: 0;
+      color: #17202c;
+      font-size: 20px;
+      line-height: 1.22;
+      font-weight: 820;
+      letter-spacing: 0;
+    }
+    .app.settings-open .general-section > p {
+      max-width: 790px;
+      color: #8994a3;
+      font-size: 15px;
+      line-height: 1.58;
+      font-weight: 460;
+    }
+    .app.settings-open .setting-card,
+    .app.settings-open .general-card-panel,
+    .app.settings-open .storage-card {
+      border: 1px solid #dfe6ef;
+      border-radius: 8px;
+      background: #fbfcfe;
+      box-shadow: none;
+    }
+    .app.settings-open .setting-card.segmented,
+    .app.settings-open .general-card-panel {
+      padding: 14px;
+    }
+    .app.settings-open .segment-option {
+      min-height: 58px;
+      border: 1px solid #d9e1ec;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #566273;
+      padding: 14px 16px;
+      text-align: left;
+      font-weight: 620;
+      transition: border-color .16s ease, background .16s ease, color .16s ease, box-shadow .16s ease;
+    }
+    .app.settings-open .segment-option:hover {
+      border-color: #c5d0df;
+      background: #f8fafc;
+      color: #1d2530;
+    }
+    .app.settings-open .segment-option.active {
+      border-color: #ad6048;
+      background: #fff7f3;
+      color: #1d2530;
+      box-shadow: inset 0 0 0 1px rgba(173, 96, 72, .12);
+    }
+    .app.settings-open .segment-option strong {
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 780;
+    }
+    .app.settings-open .segment-option small {
+      margin-top: 6px;
+      color: #8792a1;
+      font-size: 13px;
+      line-height: 1.38;
+      font-weight: 460;
+    }
+    .app.settings-open .field label {
+      color: #7b8492;
+      font-size: 13px;
+      font-weight: 720;
+    }
+    .app.settings-open .field input,
+    .app.settings-open .field select,
+    .app.settings-open .general-input-row input,
+    .app.settings-open .storage-path,
+    .app.settings-open .mcp-config-path {
+      height: 46px;
+      border: 1px solid #d9e1ec;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #1d2530;
+      font-size: 15px;
+      font-weight: 540;
+    }
+    .app.settings-open .setting-row {
+      min-height: 56px;
+      gap: 28px;
+    }
+    .app.settings-open .setting-name {
+      color: #1d2530;
+      font-size: 15px;
+      font-weight: 780;
+    }
+    .app.settings-open .setting-help {
+      margin-top: 5px;
+      color: #8792a1;
+      font-size: 13px;
+      line-height: 1.48;
+      font-weight: 460;
+    }
+    .app.settings-open .toggle-control {
+      width: 44px;
+      height: 26px;
+    }
+    .app.settings-open .general-actions {
+      position: sticky;
+      bottom: 0;
+      z-index: 5;
+      margin-top: 12px;
+      padding: 16px 0 4px;
+      background: linear-gradient(180deg, rgba(255,255,255,0), #fff 42%);
+    }
+    .app.settings-open .primary-btn,
+    .app.settings-open .secondary-btn {
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 760;
+    }
+    .app.settings-open .settings-result {
+      color: #7b8492;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    body.theme-dark {
+      --dark-bg: #0f1115;
+      --dark-panel: #171717;
+      --dark-panel-2: #1d1c1b;
+      --dark-panel-3: #111315;
+      --dark-border: #292827;
+      --dark-border-2: #353231;
+      --dark-text: #e8e4df;
+      --dark-muted: #a39b95;
+      --dark-subtle: #756e69;
+      --dark-accent: #ffac96;
+      background: var(--dark-bg);
+      color: var(--dark-text);
+    }
+    body.theme-dark .app,
+    body.theme-dark .app.settings-open,
+    body.theme-dark .stage,
+    body.theme-dark .settings-layout {
+      background: var(--dark-bg);
+      color: var(--dark-text);
+    }
+    body.theme-dark aside {
+      background: linear-gradient(180deg, #151515, #101112);
+      border-right-color: var(--dark-border);
+    }
+    body.theme-dark .topbar,
+    body.theme-dark .app.settings-open .topbar {
+      background: rgba(26, 26, 26, .92);
+      border-bottom-color: var(--dark-border);
+      box-shadow: none;
+    }
+    body.theme-dark .mode-tab,
+    body.theme-dark .mode-tab-static {
+      color: #a9a19b;
+      border-right-color: var(--dark-border);
+      background: transparent;
+    }
+    body.theme-dark .mode-tab.active {
+      color: var(--dark-text);
+      border-bottom-color: var(--dark-accent);
+    }
+    body.theme-dark .brand-left,
+    body.theme-dark .main-nav button,
+    body.theme-dark .side-heading,
+    body.theme-dark .project-header,
+    body.theme-dark .account-title,
+    body.theme-dark .settings-gear {
+      color: var(--dark-text);
+    }
+    body.theme-dark .main-nav button,
+    body.theme-dark .conversation-row,
+    body.theme-dark .session-meta,
+    body.theme-dark .relative-age {
+      color: #a8a19b;
+    }
+    body.theme-dark .search-shell,
+    body.theme-dark .sidebar-tool-btn,
+    body.theme-dark .account-card {
+      background: #1a1a1a;
+      border-color: var(--dark-border-2);
+      color: #bfb7b0;
+    }
+    body.theme-dark .sidebar-footer {
+      background: rgba(17, 17, 17, .82);
+      border-top-color: var(--dark-border);
+    }
+    body.theme-dark .app.settings-open .settings-nav {
+      background: #111315;
+      border-right-color: var(--dark-border);
+    }
+    body.theme-dark .app.settings-open .settings-nav button {
+      color: #918a84;
+    }
+    body.theme-dark .app.settings-open .settings-nav button span:first-child {
+      color: #918a84;
+    }
+    body.theme-dark .app.settings-open .settings-nav button.active {
+      background: #1d1c1b;
+      color: var(--dark-text);
+      box-shadow: inset 2px 0 0 #f3a35c;
+    }
+    body.theme-dark .app.settings-open .settings-nav button.active span:first-child {
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .settings-title,
+    body.theme-dark .app.settings-open .general-section h3,
+    body.theme-dark .app.settings-open .setting-name,
+    body.theme-dark .settings-title,
+    body.theme-dark .general-section h3,
+    body.theme-dark .setting-name {
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .settings-subtitle,
+    body.theme-dark .app.settings-open .general-section > p,
+    body.theme-dark .app.settings-open .setting-help,
+    body.theme-dark .settings-subtitle,
+    body.theme-dark .general-section > p,
+    body.theme-dark .setting-help {
+      color: var(--dark-muted);
+    }
+    body.theme-dark .app.settings-open .setting-card,
+    body.theme-dark .app.settings-open .general-card-panel,
+    body.theme-dark .app.settings-open .storage-card,
+    body.theme-dark .setting-card,
+    body.theme-dark .general-card-panel,
+    body.theme-dark .storage-card {
+      background: var(--dark-panel);
+      border-color: var(--dark-border);
+      box-shadow: none;
+    }
+    body.theme-dark .app.settings-open .segment-option,
+    body.theme-dark .segment-option {
+      background: #151719;
+      border-color: #303235;
+      color: #c8c1bc;
+    }
+    body.theme-dark .app.settings-open .segment-option:hover,
+    body.theme-dark .segment-option:hover {
+      background: #1b1d20;
+      border-color: #444141;
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .segment-option.active,
+    body.theme-dark .segment-option.active {
+      background: linear-gradient(180deg, #ffb49f, #ff7e5d);
+      border-color: #69b7ff;
+      color: #17120f;
+      box-shadow: 0 0 0 1px rgba(105, 183, 255, .72), 0 14px 34px rgba(255, 117, 78, .22);
+    }
+    body.theme-dark .app.settings-open .segment-option.active small,
+    body.theme-dark .segment-option.active small {
+      color: rgba(23, 18, 15, .68);
+    }
+    body.theme-dark .app.settings-open .field input,
+    body.theme-dark .app.settings-open .field select,
+    body.theme-dark .app.settings-open .general-input-row input,
+    body.theme-dark .app.settings-open .storage-path,
+    body.theme-dark .app.settings-open .mcp-config-path,
+    body.theme-dark .field input,
+    body.theme-dark .field select,
+    body.theme-dark .general-input-row input,
+    body.theme-dark .storage-path,
+    body.theme-dark .mcp-config-path {
+      background: #111315;
+      border-color: var(--dark-border);
+      color: var(--dark-text);
+    }
+    body.theme-dark .step-btn,
+    body.theme-dark .secondary-btn {
+      background: #16181b;
+      border-color: var(--dark-border-2);
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .general-actions {
+      background: linear-gradient(180deg, rgba(15,17,21,0), var(--dark-bg) 42%);
+    }
+    body.theme-dark .settings-result {
+      color: var(--dark-muted);
+    }
     @media (max-width: 1400px) {
       .app.settings-open { grid-template-columns: 300px minmax(0, 1fr) 0; }
       .app.settings-open .settings-layout { grid-template-columns: 210px minmax(0, 1fr); }
