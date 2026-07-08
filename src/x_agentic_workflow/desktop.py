@@ -1575,6 +1575,11 @@ class DesktopApp:
         }
 
     def _plugins_settings_state(self) -> dict[str, Any]:
+        default_config_file = Path.home() / ".x-agentic-workflow" / "config.json"
+        if self.config.config_file == default_config_file:
+            claude_plugins = self._claude_installed_plugins_settings_state()
+            if claude_plugins["plugins"]:
+                return claude_plugins
         roots = self._plugin_source_roots()
         plugins: list[dict[str, Any]] = []
         seen: set[Path] = set()
@@ -1595,7 +1600,7 @@ class DesktopApp:
                 if resolved in seen:
                     continue
                 seen.add(resolved)
-                skill_count = len(list(candidate.rglob("SKILL.md"))) + len(list(candidate.rglob("skill.md")))
+                skill_count = self._count_skill_dirs(candidate)
                 mcp_count = len(list(candidate.rglob("mcp.json"))) + len(list(candidate.rglob("server.json")))
                 manifest = next(
                     (
@@ -1617,7 +1622,12 @@ class DesktopApp:
                         "source": "Codex 插件缓存" if "cache" in root.parts else "Codex 插件",
                         "skillCount": skill_count,
                         "mcpCount": mcp_count,
+                        "agentCount": len(list((candidate / "agents").glob("*.md"))) if (candidate / "agents").exists() else 0,
+                        "commandCount": len(list((candidate / "commands").rglob("*.md"))) if (candidate / "commands").exists() else 0,
+                        "hookCount": len(list((candidate / "hooks").rglob("*"))) if (candidate / "hooks").exists() else 0,
                         "manifest": str(manifest) if manifest else "",
+                        "version": "",
+                        "installedAt": "",
                     }
                 )
         return {
@@ -1629,6 +1639,89 @@ class DesktopApp:
             "withSkills": sum(1 for item in plugins if int(item["skillCount"]) > 0),
             "withMcp": sum(1 for item in plugins if int(item["mcpCount"]) > 0),
         }
+
+    def _claude_installed_plugins_settings_state(self) -> dict[str, Any]:
+        installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+        plugins: list[dict[str, Any]] = []
+        errors: list[str] = []
+        if not installed_file.exists():
+            return {
+                "ok": True,
+                "error": "",
+                "roots": [],
+                "plugins": [],
+                "total": 0,
+                "withSkills": 0,
+                "withMcp": 0,
+            }
+        try:
+            data = json.loads(installed_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "roots": [str(installed_file)],
+                "plugins": [],
+                "total": 0,
+                "withSkills": 0,
+                "withMcp": 0,
+            }
+        raw_plugins = data.get("plugins", {})
+        if not isinstance(raw_plugins, dict):
+            raw_plugins = {}
+        for plugin_name, installs in sorted(raw_plugins.items(), key=lambda item: str(item[0]).lower()):
+            if not isinstance(installs, list):
+                continue
+            for install in installs:
+                if not isinstance(install, dict):
+                    continue
+                install_path = Path(str(install.get("installPath", ""))).expanduser()
+                if not install_path.exists():
+                    errors.append(f"{plugin_name}: 安装目录不存在")
+                skills_root = install_path / "skills"
+                mcp_count = len(list(install_path.rglob("mcp.json"))) + len(list(install_path.rglob("server.json")))
+                manifest = next(
+                    (
+                        path
+                        for path in [
+                            install_path / "plugin.json",
+                            install_path / "package.json",
+                            install_path / "manifest.json",
+                        ]
+                        if path.exists()
+                    ),
+                    None,
+                )
+                plugins.append(
+                    {
+                        "name": str(plugin_name),
+                        "path": str(install_path),
+                        "root": str(installed_file.parent),
+                        "source": "Claude 插件",
+                        "skillCount": self._count_skill_dirs(skills_root),
+                        "mcpCount": mcp_count,
+                        "agentCount": len(list((install_path / "agents").glob("*.md"))) if (install_path / "agents").exists() else 0,
+                        "commandCount": len(list((install_path / "commands").rglob("*.md"))) if (install_path / "commands").exists() else 0,
+                        "hookCount": len(list((install_path / "hooks").rglob("*"))) if (install_path / "hooks").exists() else 0,
+                        "manifest": str(manifest) if manifest else "",
+                        "version": str(install.get("version", "")),
+                        "installedAt": str(install.get("installedAt", "")),
+                    }
+                )
+        return {
+            "ok": not errors,
+            "error": "; ".join(errors),
+            "roots": [str(installed_file)],
+            "plugins": plugins,
+            "total": len(plugins),
+            "withSkills": sum(1 for item in plugins if int(item["skillCount"]) > 0),
+            "withMcp": sum(1 for item in plugins if int(item["mcpCount"]) > 0),
+        }
+
+    def _count_skill_dirs(self, root: Path) -> int:
+        if not root.exists():
+            return 0
+        return len({path.parent for path in root.rglob("SKILL.md")} | {path.parent for path in root.rglob("skill.md")})
 
     def _plugin_source_roots(self) -> list[Path]:
         default_config_file = Path.home() / ".x-agentic-workflow" / "config.json"
@@ -4112,6 +4205,7 @@ def render_desktop_html() -> str:
     body.theme-classic .computer-use-stat,
     body.theme-classic .mcp-stat,
     body.theme-classic .agent-card,
+    body.theme-classic .memory-explorer,
     body.theme-classic .memory-card,
     body.theme-classic .memory-explorer-left,
     body.theme-classic .memory-explorer-right,
@@ -4131,6 +4225,7 @@ def render_desktop_html() -> str:
     body.theme-classic .skill-name,
     body.theme-classic .agents-hero-title,
     body.theme-classic .computer-use-stat strong,
+    body.theme-classic .memory-resource-title,
     body.theme-classic .mcp-stat strong,
     body.theme-classic .agent-name,
     body.theme-classic .memory-title,
@@ -4378,6 +4473,7 @@ def render_desktop_html() -> str:
     body.theme-dark .computer-use-stat,
     body.theme-dark .mcp-stat,
     body.theme-dark .agent-card,
+    body.theme-dark .memory-explorer,
     body.theme-dark .memory-card,
     body.theme-dark .memory-explorer-left,
     body.theme-dark .memory-explorer-right,
@@ -4397,6 +4493,7 @@ def render_desktop_html() -> str:
     body.theme-dark .skill-name,
     body.theme-dark .agents-hero-title,
     body.theme-dark .computer-use-stat strong,
+    body.theme-dark .memory-resource-title,
     body.theme-dark .mcp-stat strong,
     body.theme-dark .agent-name,
     body.theme-dark .memory-title,
@@ -6244,7 +6341,7 @@ def render_desktop_html() -> str:
         result.classList.add('bad');
         result.classList.remove('ok');
       } else {
-        result.textContent = `已扫描 ${plugins.length} 个本机插件目录。`;
+        result.textContent = `已读取 ${plugins.length} 个本机插件安装项。`;
         result.classList.add('ok');
         result.classList.remove('bad');
       }
@@ -6256,21 +6353,25 @@ def render_desktop_html() -> str:
       list.innerHTML = `<section class="skill-group">
         <div class="skill-group-head">
           <div>
-            <div class="skill-source-row"><span class="skill-source-icon plugin">⌘</span><span class="skill-source-title">Codex 插件</span><span class="skill-source-count">${plugins.length}</span></div>
-            <div class="skill-source-hint">展示本机插件目录、Skills 和 MCP 入口数量。</div>
+            <div class="skill-source-row"><span class="skill-source-icon plugin">⌘</span><span class="skill-source-title">本机插件</span><span class="skill-source-count">${plugins.length}</span></div>
+            <div class="skill-source-hint">展示已安装插件的 Skills、Agents、命令和 MCP 入口数量。</div>
           </div>
           <div class="skill-source-tokens">${escapeHtml((pluginsState.roots || []).filter(Boolean).join(' · '))}</div>
         </div>
         <div class="skill-list">
-          ${plugins.map(plugin => `<button class="skill-card" type="button" title="${escapeHtml(plugin.path || '')}">
-            <span class="skill-card-icon">⌘</span>
-            <span>
-              <span class="skill-name-row"><span class="skill-name">${escapeHtml(plugin.name || 'unnamed')}</span><span class="badge">${escapeHtml(plugin.source || '插件')}</span></span>
-              <span class="skill-description">${escapeHtml(plugin.manifest ? `Manifest: ${plugin.manifest}` : '未检测到 manifest 文件。')}</span>
-              <span class="skill-meta"><span>${escapeHtml(plugin.path || '')}</span><span>${Number(plugin.skillCount || 0)} skills</span><span>${Number(plugin.mcpCount || 0)} MCP</span></span>
-            </span>
-            <span class="skill-card-arrow">›</span>
-          </button>`).join('')}
+          ${plugins.map(plugin => {
+            const version = plugin.version ? `<span class="badge">v${escapeHtml(plugin.version)}</span>` : '';
+            const installed = plugin.installedAt ? `安装于 ${escapeHtml(String(plugin.installedAt).slice(0, 10))}` : '本机插件目录';
+            return `<button class="skill-card" type="button" title="${escapeHtml(plugin.path || '')}">
+              <span class="skill-card-icon">⌘</span>
+              <span>
+                <span class="skill-name-row"><span class="skill-name">${escapeHtml(plugin.name || 'unnamed')}</span>${version}<span class="badge">${escapeHtml(plugin.source || '插件')}</span></span>
+                <span class="skill-description">${escapeHtml(installed)}</span>
+                <span class="skill-meta"><span>${escapeHtml(plugin.path || '')}</span><span>${Number(plugin.skillCount || 0)} skills</span><span>${Number(plugin.agentCount || 0)} agents</span><span>${Number(plugin.commandCount || 0)} commands</span><span>${Number(plugin.hookCount || 0)} hooks</span><span>${Number(plugin.mcpCount || 0)} MCP</span></span>
+              </span>
+              <span class="skill-card-arrow">›</span>
+            </button>`;
+          }).join('')}
         </div>
       </section>`;
     }
