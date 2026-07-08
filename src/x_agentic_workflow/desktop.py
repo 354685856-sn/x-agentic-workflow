@@ -1529,14 +1529,20 @@ class DesktopApp:
         }
 
     def _skills_settings_state(self) -> dict[str, Any]:
-        registry = SkillRegistry(self.config.skills_dir)
-        try:
-            skills = registry.discover()
-        except OSError as exc:
+        source_roots = self._skill_source_roots()
+        skills = []
+        errors: list[str] = []
+        for source, root in source_roots:
+            registry = SkillRegistry(root, source=source, create=source == "project")
+            try:
+                skills.extend(registry.discover())
+            except OSError as exc:
+                errors.append(f"{root}: {exc}")
+        if errors and not skills:
             return {
                 "skillsDir": str(self.config.skills_dir),
                 "ok": False,
-                "error": str(exc),
+                "error": "; ".join(errors),
                 "skills": [],
                 "total": 0,
                 "withDescription": 0,
@@ -1547,6 +1553,7 @@ class DesktopApp:
         estimated_chars = 0
         sources: set[str] = set()
         for skill in skills:
+            root = skill.root or self.config.skills_dir
             try:
                 stat = skill.path.stat()
                 size = stat.st_size
@@ -1554,31 +1561,90 @@ class DesktopApp:
             except OSError:
                 size = 0
                 updated = ""
-            relative_path = str(skill.path.relative_to(self.config.skills_dir))
-            source = relative_path.split("/", 1)[0] if "/" in relative_path else "user"
+            try:
+                relative_path = str(skill.path.relative_to(root))
+            except ValueError:
+                relative_path = str(skill.path)
+            source = skill.source or "project"
+            source_name = self._skill_source_name(source, skill.path, root)
             sources.add(source)
             estimated_chars += len(skill.content)
             items.append(
                 {
                     "name": skill.name,
+                    "displayName": skill.name,
                     "description": skill.description,
                     "path": str(skill.path),
                     "relativePath": relative_path,
                     "source": source,
+                    "sourceName": source_name,
+                    "version": skill.version,
+                    "userInvocable": skill.user_invocable,
+                    "hasDirectory": skill.path.name.lower() == "skill.md",
                     "sizeBytes": size,
+                    "contentLength": len(skill.content),
+                    "estimatedTokens": max(1, round(len(skill.content) / 4)) if skill.content else 0,
                     "updated": updated,
                 }
             )
+        items.sort(key=lambda item: (str(item["source"]), str(item["name"]).lower(), str(item["relativePath"])))
         return {
             "skillsDir": str(self.config.skills_dir),
-            "ok": True,
-            "error": "",
+            "ok": not errors,
+            "error": "; ".join(errors),
             "skills": items,
             "total": len(items),
             "withDescription": sum(1 for item in items if item["description"]),
             "sources": len(sources),
             "estimatedChars": estimated_chars,
         }
+
+    def _skill_source_roots(self) -> list[tuple[str, Path]]:
+        roots: list[tuple[str, Path]] = [("project", self.config.skills_dir)]
+        default_config_file = Path.home() / ".x-agentic-workflow" / "config.json"
+        if self.config.config_file != default_config_file:
+            return roots
+        home = Path.home()
+        for source, root in [
+            ("user", home / ".claude" / "skills"),
+            ("user", home / ".codex" / "skills"),
+            ("user", home / ".agents" / "skills"),
+            ("plugin", home / ".codex" / "plugins" / "cache"),
+        ]:
+            if root.exists():
+                roots.append((source, root))
+        deduped: list[tuple[str, Path]] = []
+        seen: set[Path] = set()
+        for source, root in roots:
+            try:
+                resolved = root.resolve()
+            except OSError:
+                resolved = root
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            deduped.append((source, root))
+        return deduped
+
+    def _skill_source_name(self, source: str, path: Path, root: Path) -> str:
+        if source == "project":
+            return "项目"
+        if source == "user":
+            if ".claude" in path.parts:
+                return "Claude"
+            if ".agents" in path.parts:
+                return "Agents"
+            return "Codex"
+        if source == "plugin":
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                return "插件"
+            parts = relative.parts
+            if len(parts) >= 2:
+                return "/".join(parts[:2])
+            return "插件"
+        return source
 
     def _memory_settings_state(self) -> dict[str, Any]:
         try:
@@ -2255,12 +2321,13 @@ def render_desktop_html() -> str:
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
-    body { margin: 0; color: var(--ink); background: #fefefe; overflow: hidden; }
+    body { margin: 0; color: var(--ink); background: #fefefe; overflow: hidden; color-scheme: light; }
     body.theme-classic {
       --accent: #ad6048;
       --soft: #fbf6f3;
       --side: #f8f1ed;
       background: #fffaf7;
+      color-scheme: light;
     }
     body.theme-dark {
       --ink: #eef2f7;
@@ -2272,6 +2339,7 @@ def render_desktop_html() -> str:
       --accent: #f1a27f;
       background: #0f131b;
       color: var(--ink);
+      color-scheme: dark;
     }
     body.theme-dark aside,
     body.theme-dark .settings-nav,
@@ -2712,19 +2780,66 @@ def render_desktop_html() -> str:
     .agent-instructions { margin-top: 8px; color: #536172; font-size: 14px; line-height: 1.5; }
     .agent-meta { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; color: #7a8798; font-size: 13px; }
     .agent-arrow { color: #a0a8b4; font-size: 24px; line-height: 1; padding-top: 4px; }
-    .skills-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; }
-    .skills-search {
-      height: 44px; border: 1px solid #d9e1ec; border-radius: 8px; padding: 0 14px;
-      font: inherit; background: white; color: #202633;
+    .skills-browser { display: grid; gap: 22px; }
+    .skills-hero {
+      border: 1px solid #dfe6ef; border-radius: 12px; background: #fbfcfe; overflow: hidden;
+      display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, .9fr); gap: 22px;
+      padding: 24px 26px; align-items: end;
     }
-    .skills-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
-    .skill-list { display: grid; gap: 10px; }
-    .skill-card { border: 1px solid #dfe6ef; border-radius: 8px; background: white; padding: 15px 18px; display: grid; gap: 8px; }
-    .skill-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
-    .skill-name { color: #202633; font-size: 18px; font-weight: 800; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .skill-description { color: #536172; font-size: 14px; line-height: 1.5; }
-    .skill-meta { color: #7a8798; font-size: 13px; line-height: 1.45; word-break: break-word; }
-    .skill-empty { border: 1px dashed #d8e0ea; border-radius: 8px; color: #7a8798; padding: 22px; background: #fbfcfe; }
+    .skills-eyebrow { color: #8a96a5; font-size: 12px; font-weight: 820; letter-spacing: .18em; text-transform: uppercase; }
+    .skills-hero-title { margin-top: 10px; display: flex; align-items: center; gap: 10px; color: #202633; font-size: 24px; font-weight: 840; }
+    .skills-hero-title span { color: #b56049; font-size: 26px; line-height: 1; }
+    .skills-hero-copy { margin-top: 10px; max-width: 760px; color: #627083; font-size: 15px; line-height: 1.6; }
+    .skills-search-shell {
+      margin-top: 18px; max-width: 640px; height: 48px; border: 1px solid #d9e1ec; border-radius: 10px;
+      display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+      padding: 0 14px; background: white; color: #202633;
+    }
+    .skills-search-icon { color: #8a96a5; font-size: 20px; }
+    .skills-search {
+      min-width: 0; height: 44px; border: 0; outline: 0; padding: 0;
+      font: inherit; background: transparent; color: #202633;
+    }
+    .skills-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .skill-summary-card { border: 1px solid #dfe6ef; border-radius: 10px; background: white; padding: 14px; min-width: 0; }
+    .skill-summary-card span { display: flex; gap: 6px; align-items: center; color: #7a8798; font-size: 12px; font-weight: 760; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .skill-summary-card strong { display: block; color: #202633; font-size: 26px; line-height: 1; margin-top: 10px; }
+    .skill-group-grid { display: grid; gap: 16px; }
+    .skill-group-grid.split { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+    .skill-group { border: 1px solid #dfe6ef; border-radius: 12px; background: white; overflow: hidden; min-width: 0; }
+    .skill-group-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+      padding: 18px 20px; border-bottom: 1px solid #e7edf4; background: #fbfcfe;
+    }
+    .skill-source-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .skill-source-icon {
+      width: 32px; height: 32px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
+      background: #fff0e9; color: #b56049; font-size: 18px; flex: 0 0 auto;
+    }
+    .skill-source-icon.project { background: #e9f7ef; color: #0f8f5b; }
+    .skill-source-icon.plugin { background: #fff5df; color: #b7791f; }
+    .skill-source-title { color: #202633; font-size: 16px; font-weight: 820; }
+    .skill-source-count { color: #8a96a5; font-size: 12px; font-weight: 760; }
+    .skill-source-hint { margin-top: 5px; color: #7a8798; font-size: 13px; line-height: 1.45; }
+    .skill-source-tokens { color: #8a96a5; font-size: 12px; white-space: nowrap; }
+    .skill-list { display: grid; padding: 8px; }
+    .skill-card {
+      width: 100%; text-align: left; border: 1px solid transparent; border-radius: 10px; background: transparent;
+      padding: 14px; display: grid; grid-template-columns: 24px minmax(0, 1fr) 20px; gap: 12px; cursor: pointer; font: inherit;
+      transition: background .16s ease, border-color .16s ease, transform .16s ease;
+    }
+    .skill-card:hover { border-color: #d2dce8; background: #f8fafc; }
+    .skill-card-icon { color: #8a96a5; font-size: 18px; line-height: 1.2; padding-top: 2px; }
+    .skill-card-arrow { color: #a0a8b4; font-size: 22px; line-height: 1; padding-top: 2px; }
+    .skill-name-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+    .skill-name { color: #202633; font-size: 16px; font-weight: 820; min-width: 0; overflow-wrap: anywhere; }
+    .skill-description { margin-top: 6px; color: #536172; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+    .skill-meta { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 8px 12px; color: #7a8798; font-size: 12px; line-height: 1.4; }
+    .skill-empty { border: 1px dashed #d8e0ea; border-radius: 10px; color: #7a8798; padding: 26px; background: #fbfcfe; text-align: center; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
     .memory-browser { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: 14px; align-items: start; }
     .memory-list { display: grid; gap: 10px; max-height: 560px; overflow: auto; }
     .memory-card {
@@ -3427,6 +3542,37 @@ def render_desktop_html() -> str:
       font-size: 13px;
       line-height: 1.45;
     }
+    .app.settings-open .settings-nav,
+    .app.settings-open .settings-panel,
+    .app.settings-open .side-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: #c3ccd8 transparent;
+    }
+    .app.settings-open .settings-nav::-webkit-scrollbar,
+    .app.settings-open .settings-panel::-webkit-scrollbar,
+    .app.settings-open .side-scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .app.settings-open .settings-nav::-webkit-scrollbar-track,
+    .app.settings-open .settings-panel::-webkit-scrollbar-track,
+    .app.settings-open .side-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .app.settings-open .settings-nav::-webkit-scrollbar-thumb,
+    .app.settings-open .settings-panel::-webkit-scrollbar-thumb,
+    .app.settings-open .side-scroll::-webkit-scrollbar-thumb {
+      background: #c3ccd8;
+      border: 3px solid transparent;
+      border-radius: 999px;
+      background-clip: content-box;
+    }
+    .app.settings-open .settings-nav::-webkit-scrollbar-thumb:hover,
+    .app.settings-open .settings-panel::-webkit-scrollbar-thumb:hover,
+    .app.settings-open .side-scroll::-webkit-scrollbar-thumb:hover {
+      background: #9eabbc;
+      background-clip: content-box;
+    }
     body.theme-dark {
       --dark-bg: #0f1115;
       --dark-panel: #171717;
@@ -3587,8 +3733,78 @@ def render_desktop_html() -> str:
     body.theme-classic .settings-result {
       color: var(--classic-muted);
     }
+    body.theme-classic .skills-hero,
+    body.theme-classic .skill-group,
+    body.theme-classic .skill-summary-card,
+    body.theme-classic .skills-search-shell {
+      background: var(--classic-panel);
+      border-color: var(--classic-border);
+    }
+    body.theme-classic .skill-group-head {
+      background: var(--classic-panel-2);
+      border-bottom-color: var(--classic-border);
+    }
+    body.theme-classic .skills-hero-title,
+    body.theme-classic .skill-source-title,
+    body.theme-classic .skill-summary-card strong,
+    body.theme-classic .skill-name {
+      color: var(--classic-text);
+    }
+    body.theme-classic .skills-hero-copy,
+    body.theme-classic .skill-description,
+    body.theme-classic .skill-meta,
+    body.theme-classic .skill-source-hint,
+    body.theme-classic .skill-source-count,
+    body.theme-classic .skill-source-tokens,
+    body.theme-classic .skill-summary-card span,
+    body.theme-classic .skills-eyebrow {
+      color: var(--classic-muted);
+    }
+    body.theme-classic .skills-search {
+      color: var(--classic-text);
+    }
+    body.theme-classic .skill-card:hover {
+      background: #fff7f1;
+      border-color: var(--classic-border-2);
+    }
+    body.theme-classic .skill-source-icon {
+      background: #ffe3d3;
+      color: var(--classic-accent);
+    }
+    body.theme-classic .skill-source-icon.project {
+      background: #edf6ec;
+      color: #3d7b4e;
+    }
+    body.theme-classic .skill-source-icon.plugin {
+      background: #fff0c7;
+      color: #9a6a16;
+    }
+    body.theme-classic .app.settings-open .settings-nav,
+    body.theme-classic .app.settings-open .settings-panel,
+    body.theme-classic .app.settings-open .side-scroll {
+      scrollbar-color: rgba(165, 83, 57, .34) transparent;
+    }
+    body.theme-classic .app.settings-open .settings-nav::-webkit-scrollbar-track,
+    body.theme-classic .app.settings-open .settings-panel::-webkit-scrollbar-track,
+    body.theme-classic .app.settings-open .side-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    body.theme-classic .app.settings-open .settings-nav::-webkit-scrollbar-thumb,
+    body.theme-classic .app.settings-open .settings-panel::-webkit-scrollbar-thumb,
+    body.theme-classic .app.settings-open .side-scroll::-webkit-scrollbar-thumb {
+      background: rgba(165, 83, 57, .34);
+      border-color: transparent;
+      background-clip: content-box;
+    }
+    body.theme-classic .app.settings-open .settings-nav::-webkit-scrollbar-thumb:hover,
+    body.theme-classic .app.settings-open .settings-panel::-webkit-scrollbar-thumb:hover,
+    body.theme-classic .app.settings-open .side-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(165, 83, 57, .48);
+      background-clip: content-box;
+    }
     body.theme-dark .app,
     body.theme-dark .app.settings-open,
+    body.theme-dark .app.settings-open .settings-layout,
     body.theme-dark .stage,
     body.theme-dark .settings-layout {
       background: var(--dark-bg);
@@ -3655,6 +3871,9 @@ def render_desktop_html() -> str:
       box-shadow: inset 2px 0 0 #f3a35c;
     }
     body.theme-dark .app.settings-open .settings-nav button.active span:first-child {
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .settings-panel {
       color: var(--dark-text);
     }
     body.theme-dark .app.settings-open .settings-title,
@@ -3731,6 +3950,81 @@ def render_desktop_html() -> str:
     }
     body.theme-dark .settings-result {
       color: var(--dark-muted);
+    }
+    body.theme-dark .skills-hero,
+    body.theme-dark .skill-group,
+    body.theme-dark .skill-summary-card,
+    body.theme-dark .skills-search-shell {
+      background: var(--dark-panel);
+      border-color: var(--dark-border);
+    }
+    body.theme-dark .skill-group-head {
+      background: var(--dark-panel-2);
+      border-bottom-color: var(--dark-border);
+    }
+    body.theme-dark .skills-hero-title,
+    body.theme-dark .skill-source-title,
+    body.theme-dark .skill-summary-card strong,
+    body.theme-dark .skill-name {
+      color: var(--dark-text);
+    }
+    body.theme-dark .skills-hero-copy,
+    body.theme-dark .skill-description,
+    body.theme-dark .skill-meta,
+    body.theme-dark .skill-source-hint,
+    body.theme-dark .skill-source-count,
+    body.theme-dark .skill-source-tokens,
+    body.theme-dark .skill-summary-card span,
+    body.theme-dark .skills-eyebrow {
+      color: var(--dark-muted);
+    }
+    body.theme-dark .skills-search {
+      color: var(--dark-text);
+    }
+    body.theme-dark .skill-card:hover {
+      background: #1b1d20;
+      border-color: var(--dark-border-2);
+    }
+    body.theme-dark .skill-source-icon {
+      background: rgba(255, 181, 159, .16);
+      color: var(--dark-accent);
+    }
+    body.theme-dark .skill-source-icon.project {
+      background: rgba(97, 180, 128, .15);
+      color: #91d39d;
+    }
+    body.theme-dark .skill-source-icon.plugin {
+      background: rgba(255, 198, 90, .15);
+      color: #e1b45f;
+    }
+    body.theme-dark .app.settings-open .settings-nav,
+    body.theme-dark .app.settings-open .settings-panel,
+    body.theme-dark .app.settings-open .side-scroll {
+      scrollbar-color: #615a56 #101112;
+    }
+    body.theme-dark .app.settings-open .settings-nav::-webkit-scrollbar-track,
+    body.theme-dark .app.settings-open .side-scroll::-webkit-scrollbar-track {
+      background: #101112;
+    }
+    body.theme-dark .app.settings-open .settings-panel::-webkit-scrollbar-track {
+      background: var(--dark-bg);
+    }
+    body.theme-dark .app.settings-open .settings-nav::-webkit-scrollbar-thumb,
+    body.theme-dark .app.settings-open .side-scroll::-webkit-scrollbar-thumb {
+      background: #615a56;
+      border-color: #101112;
+      background-clip: content-box;
+    }
+    body.theme-dark .app.settings-open .settings-panel::-webkit-scrollbar-thumb {
+      background: #615a56;
+      border-color: var(--dark-bg);
+      background-clip: content-box;
+    }
+    body.theme-dark .app.settings-open .settings-nav::-webkit-scrollbar-thumb:hover,
+    body.theme-dark .app.settings-open .settings-panel::-webkit-scrollbar-thumb:hover,
+    body.theme-dark .app.settings-open .side-scroll::-webkit-scrollbar-thumb:hover {
+      background: #7a706a;
+      background-clip: content-box;
     }
     @media (max-width: 1400px) {
       .app.settings-open { grid-template-columns: 300px minmax(0, 1fr) 0; }
@@ -4342,37 +4636,32 @@ def render_desktop_html() -> str:
             <div class="settings-panel" id="skillsSettingsPanel">
               <div class="settings-head">
                 <div>
-                  <div class="settings-title">技能</div>
-                  <div class="settings-subtitle">浏览本机技能目录中可被 Agent 按名称触发的 Markdown 技能。</div>
+                  <div class="settings-title">已安装技能</div>
+                  <div class="settings-subtitle">技能扩展 Agent 的能力。读取本机已安装技能，比较来源、规模和可触发信息。</div>
                 </div>
                 <button class="secondary-btn" id="refreshSkillsSettings">刷新</button>
               </div>
-              <div class="general-sections">
-                <section class="general-section">
-                  <h3>技能目录</h3>
-                  <p>当前版本读取本机技能索引，不展示完整正文，也不安装外部技能。</p>
-                  <div class="setting-card">
-                    <div class="mcp-config-path" id="skillsDir">-</div>
-                    <div class="settings-result" id="skillsResult"></div>
+              <div class="skills-browser">
+                <section class="skills-hero">
+                  <div>
+                    <div class="skills-eyebrow">技能目录</div>
+                    <div class="skills-hero-title"><span>✦</span>浏览已安装技能</div>
+                    <div class="skills-hero-copy">查看项目、用户和插件技能，按来源分组浏览。这里只读取摘要，不加载完整正文进页面。</div>
+                    <label class="sr-only" for="skillsSearch">搜索技能</label>
+                    <div class="skills-search-shell">
+                      <span class="skills-search-icon">⌕</span>
+                      <input class="skills-search" id="skillsSearch" placeholder="搜索技能名称、描述或来源..." />
+                      <span class="badge" id="skillsFilterCount">0/0</span>
+                    </div>
                   </div>
-                </section>
-                <section class="general-section">
-                  <h3>技能概览</h3>
                   <div class="skills-summary-grid">
-                    <div class="mcp-stat"><span>技能总数</span><strong id="skillsTotal">0</strong></div>
-                    <div class="mcp-stat"><span>有描述</span><strong id="skillsDescribed">0</strong></div>
-                    <div class="mcp-stat"><span>来源数</span><strong id="skillsSources">0</strong></div>
-                    <div class="mcp-stat"><span>约字符</span><strong id="skillsChars">0</strong></div>
+                    <div class="skill-summary-card"><span>✦ 技能</span><strong id="skillsTotal">0</strong></div>
+                    <div class="skill-summary-card"><span>▱ 来源</span><strong id="skillsSources">0</strong></div>
+                    <div class="skill-summary-card"><span>☰ 预估 Token</span><strong id="skillsTokens">0</strong></div>
                   </div>
                 </section>
-                <section class="general-section">
-                  <h3>已安装技能</h3>
-                  <div class="skills-toolbar">
-                    <input class="skills-search" id="skillsSearch" placeholder="搜索技能名称、描述或路径..." />
-                    <span class="badge" id="skillsFilterCount">0</span>
-                  </div>
-                  <div class="skill-list" id="skillsList"></div>
-                </section>
+                <div class="settings-result" id="skillsResult"></div>
+                <div class="skill-group-grid" id="skillsList"></div>
               </div>
             </div>
             <div class="settings-panel" id="memorySettingsPanel">
@@ -5161,18 +5450,17 @@ def render_desktop_html() -> str:
     }
     function renderSkillsSettings(skillsState) {
       const skills = skillsState.skills || [];
-      $('skillsDir').textContent = skillsState.skillsDir || '-';
       $('skillsTotal').textContent = String(skillsState.total || 0);
-      $('skillsDescribed').textContent = String(skillsState.withDescription || 0);
       $('skillsSources').textContent = String(skillsState.sources || 0);
-      $('skillsChars').textContent = formatCompactNumber(skillsState.estimatedChars || 0);
+      const totalTokens = skills.reduce((sum, skill) => sum + Number(skill.estimatedTokens || Math.ceil(Number(skill.contentLength || 0) / 4)), 0);
+      $('skillsTokens').textContent = `约 ${formatCompactNumber(totalTokens)}`;
       const result = $('skillsResult');
       if (skillsState.ok === false) {
         result.textContent = `技能读取失败：${skillsState.error || '未知错误'}`;
         result.classList.add('bad');
         result.classList.remove('ok');
       } else {
-        result.textContent = '技能索引已读取。这里只展示摘要，不加载完整正文。';
+        result.textContent = `已读取 ${skills.length} 个技能。这里只展示摘要，不加载完整正文。`;
         result.classList.add('ok');
         result.classList.remove('bad');
       }
@@ -5181,23 +5469,61 @@ def render_desktop_html() -> str:
     function renderSkillList(skills) {
       const query = ($('skillsSearch').value || '').trim().toLowerCase();
       const filtered = skills.filter(skill => {
-        const text = [skill.name, skill.description, skill.relativePath, skill.source].join(' ').toLowerCase();
+        const text = [skill.name, skill.displayName, skill.description, skill.relativePath, skill.source, skill.sourceName, skill.version].join(' ').toLowerCase();
         return !query || text.includes(query);
       });
       $('skillsFilterCount').textContent = `${filtered.length}/${skills.length}`;
       const list = $('skillsList');
       if (!filtered.length) {
         list.innerHTML = '<div class="skill-empty">暂无匹配技能。</div>';
+        list.classList.remove('split');
         return;
       }
-      list.innerHTML = filtered.map(skill => {
-        const description = skill.description || '没有描述。';
-        const meta = `${skill.relativePath || skill.path || ''} · ${skill.updated || '未知时间'} · ${formatCompactNumber(skill.sizeBytes || 0)}B`;
-        return `<div class="skill-card">
-          <div class="skill-head"><div class="skill-name">${escapeHtml(skill.name || 'unnamed')}</div><span class="badge">${escapeHtml(skill.source || 'user')}</span></div>
-          <div class="skill-description">${escapeHtml(description)}</div>
-          <div class="skill-meta">${escapeHtml(meta)}</div>
-        </div>`;
+      const order = ['project', 'user', 'plugin'];
+      const grouped = {};
+      filtered.forEach(skill => {
+        const source = skill.source || 'user';
+        if (!grouped[source]) grouped[source] = [];
+        grouped[source].push(skill);
+      });
+      const groups = order.filter(source => grouped[source]?.length).concat(Object.keys(grouped).filter(source => !order.includes(source)));
+      list.classList.toggle('split', groups.length >= 2);
+      const sourceLabel = { project: '项目', user: '用户', plugin: '插件' };
+      const sourceIcon = { project: '▣', user: '◎', plugin: '⌘' };
+      list.innerHTML = groups.map(source => {
+        const group = grouped[source] || [];
+        const tokenCount = group.reduce((sum, skill) => sum + Number(skill.estimatedTokens || Math.ceil(Number(skill.contentLength || 0) / 4)), 0);
+        const label = sourceLabel[source] || source;
+        return `<section class="skill-group">
+          <div class="skill-group-head">
+            <div>
+              <div class="skill-source-row">
+                <span class="skill-source-icon ${escapeHtml(source)}">${escapeHtml(sourceIcon[source] || '✦')}</span>
+                <span class="skill-source-title">${escapeHtml(label)}</span>
+                <span class="skill-source-count">${group.length}</span>
+              </div>
+              <div class="skill-source-hint">${escapeHtml(label)}中有 ${group.length} 个技能可用</div>
+            </div>
+            <div class="skill-source-tokens">约 ${formatCompactNumber(tokenCount)} tokens</div>
+          </div>
+          <div class="skill-list">
+            ${group.map(skill => {
+              const description = skill.description || '没有描述。';
+              const tokenText = `约 ${formatCompactNumber(skill.estimatedTokens || Math.ceil(Number(skill.contentLength || 0) / 4))} tokens`;
+              const version = skill.version ? `<span class="badge">v${escapeHtml(skill.version)}</span>` : '';
+              const slash = skill.userInvocable ? '<span class="badge">/斜杠命令</span>' : '';
+              return `<button class="skill-card" type="button" title="${escapeHtml(skill.path || '')}">
+                <span class="skill-card-icon">✦</span>
+                <span>
+                  <span class="skill-name-row"><span class="skill-name">${escapeHtml(skill.displayName || skill.name || 'unnamed')}</span>${version}${slash}</span>
+                  <span class="skill-description">${escapeHtml(description)}</span>
+                  <span class="skill-meta"><span>${escapeHtml(skill.sourceName || label)}</span><span>${escapeHtml(tokenText)}</span><span>${escapeHtml(skill.relativePath || '')}</span></span>
+                </span>
+                <span class="skill-card-arrow">›</span>
+              </button>`;
+            }).join('')}
+          </div>
+        </section>`;
       }).join('');
     }
     async function refreshSkillsSettings() {
