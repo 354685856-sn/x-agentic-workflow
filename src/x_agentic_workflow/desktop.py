@@ -1533,7 +1533,12 @@ class DesktopApp:
         skills = []
         errors: list[str] = []
         for source, root in source_roots:
-            registry = SkillRegistry(root, source=source, create=source == "project")
+            registry = SkillRegistry(
+                root,
+                source=source,
+                create=source == "project",
+                include_loose_markdown=source != "plugin",
+            )
             try:
                 skills.extend(registry.discover())
             except OSError as exc:

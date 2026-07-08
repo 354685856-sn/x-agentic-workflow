@@ -23,9 +23,17 @@ class Skill:
 
 
 class SkillRegistry:
-    def __init__(self, root: Path, *, source: str = "project", create: bool = True) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        source: str = "project",
+        create: bool = True,
+        include_loose_markdown: bool = True,
+    ) -> None:
         self.root = root
         self.source = source
+        self.include_loose_markdown = include_loose_markdown
         if create:
             self.root.mkdir(parents=True, exist_ok=True)
 
@@ -61,13 +69,14 @@ class SkillRegistry:
                 seen.add(path)
                 skill_dirs.add(path.parent)
                 paths.append(path)
-        for path in sorted(self.root.rglob("*.md")):
-            if path in seen or path.name.lower() == "readme.md":
-                continue
-            if path.parent in skill_dirs:
-                continue
-            seen.add(path)
-            paths.append(path)
+        if self.include_loose_markdown:
+            for path in sorted(self.root.rglob("*.md")):
+                if path in seen or path.name.lower() == "readme.md":
+                    continue
+                if path.parent in skill_dirs:
+                    continue
+                seen.add(path)
+                paths.append(path)
         return paths
 
     def _metadata(self, path: Path, content: str) -> tuple[str, str, str, bool]:
