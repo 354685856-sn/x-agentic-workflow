@@ -4184,7 +4184,8 @@ def render_desktop_html() -> str:
       background: #a55339;
       box-shadow: 0 10px 22px rgba(165, 83, 57, .12);
     }
-    body.theme-classic .app.settings-open .secondary-btn {
+    body.theme-classic .app.settings-open .secondary-btn,
+    body.theme-classic .secondary-btn {
       background: #fff9f4;
       border-color: var(--classic-border);
       color: var(--classic-text);
@@ -4201,9 +4202,11 @@ def render_desktop_html() -> str:
     body.theme-classic .skills-search-shell,
     body.theme-classic .agents-hero,
     body.theme-classic .agent-list,
+    body.theme-classic .app.settings-open .agent-list,
     body.theme-classic .computer-use-overview,
     body.theme-classic .computer-use-stat,
     body.theme-classic .mcp-stat,
+    body.theme-classic .app.settings-open .mcp-stat,
     body.theme-classic .agent-card,
     body.theme-classic .memory-explorer,
     body.theme-classic .memory-card,
@@ -4211,7 +4214,11 @@ def render_desktop_html() -> str:
     body.theme-classic .memory-explorer-right,
     body.theme-classic .memory-content,
     body.theme-classic .mcp-empty,
-    body.theme-classic .memory-empty {
+    body.theme-classic .app.settings-open .mcp-empty,
+    body.theme-classic .memory-empty,
+    body.theme-classic .app.settings-open .memory-empty,
+    body.theme-classic .provider-card,
+    body.theme-classic .app.settings-open .provider-card {
       background: var(--classic-panel);
       border-color: var(--classic-border);
     }
@@ -4227,6 +4234,7 @@ def render_desktop_html() -> str:
     body.theme-classic .computer-use-stat strong,
     body.theme-classic .memory-resource-title,
     body.theme-classic .mcp-stat strong,
+    body.theme-classic .provider-card-title,
     body.theme-classic .agent-name,
     body.theme-classic .memory-title,
     body.theme-classic .memory-preview-title {
@@ -4244,6 +4252,7 @@ def render_desktop_html() -> str:
     body.theme-classic .agents-hero-copy,
     body.theme-classic .computer-use-stat span,
     body.theme-classic .mcp-stat span,
+    body.theme-classic .provider-card-meta,
     body.theme-classic .agent-instructions,
     body.theme-classic .agent-meta,
     body.theme-classic .memory-summary,
@@ -4452,7 +4461,8 @@ def render_desktop_html() -> str:
       color: var(--dark-text);
     }
     body.theme-dark .step-btn,
-    body.theme-dark .secondary-btn {
+    body.theme-dark .secondary-btn,
+    body.theme-dark .app.settings-open .secondary-btn {
       background: #16181b;
       border-color: var(--dark-border-2);
       color: var(--dark-text);
@@ -4469,9 +4479,11 @@ def render_desktop_html() -> str:
     body.theme-dark .skills-search-shell,
     body.theme-dark .agents-hero,
     body.theme-dark .agent-list,
+    body.theme-dark .app.settings-open .agent-list,
     body.theme-dark .computer-use-overview,
     body.theme-dark .computer-use-stat,
     body.theme-dark .mcp-stat,
+    body.theme-dark .app.settings-open .mcp-stat,
     body.theme-dark .agent-card,
     body.theme-dark .memory-explorer,
     body.theme-dark .memory-card,
@@ -4479,7 +4491,11 @@ def render_desktop_html() -> str:
     body.theme-dark .memory-explorer-right,
     body.theme-dark .memory-content,
     body.theme-dark .mcp-empty,
-    body.theme-dark .memory-empty {
+    body.theme-dark .app.settings-open .mcp-empty,
+    body.theme-dark .memory-empty,
+    body.theme-dark .app.settings-open .memory-empty,
+    body.theme-dark .provider-card,
+    body.theme-dark .app.settings-open .provider-card {
       background: var(--dark-panel);
       border-color: var(--dark-border);
     }
@@ -4495,6 +4511,7 @@ def render_desktop_html() -> str:
     body.theme-dark .computer-use-stat strong,
     body.theme-dark .memory-resource-title,
     body.theme-dark .mcp-stat strong,
+    body.theme-dark .provider-card-title,
     body.theme-dark .agent-name,
     body.theme-dark .memory-title,
     body.theme-dark .memory-preview-title {
@@ -4512,6 +4529,7 @@ def render_desktop_html() -> str:
     body.theme-dark .agents-hero-copy,
     body.theme-dark .computer-use-stat span,
     body.theme-dark .mcp-stat span,
+    body.theme-dark .provider-card-meta,
     body.theme-dark .agent-instructions,
     body.theme-dark .agent-meta,
     body.theme-dark .memory-summary,
