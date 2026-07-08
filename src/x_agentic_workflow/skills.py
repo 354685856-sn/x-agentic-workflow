@@ -66,6 +66,8 @@ class SkillRegistry:
             for path in sorted(self.root.rglob(filename)):
                 if path in seen:
                     continue
+                if path.parent in skill_dirs:
+                    continue
                 seen.add(path)
                 skill_dirs.add(path.parent)
                 paths.append(path)

@@ -22,9 +22,8 @@ from urllib.parse import parse_qs, urlparse
 from .agent import Agent
 from .config import ProviderConfig, RuntimeConfig
 from .mcp import McpRegistry
-from .multi_agent import DEFAULT_ROLES
 from .sessions import SessionStore
-from .skills import SkillRegistry
+from .skills import Skill, SkillRegistry
 from .tools import tool_specs
 from .types import AgentEvent, Message
 
@@ -41,6 +40,45 @@ MEMORY_PREVIEW_CHARS = 12_000
 MEMORY_SCAN_LIMIT = 120
 COMMAND_TIMEOUT_SECONDS = 120
 SETTINGS_LIST_LIMIT = 80
+
+BUILTIN_AGENT_SETTINGS: list[dict[str, str]] = [
+    {
+        "name": "general-purpose",
+        "instructions": "General-purpose agent for research, code search, and multi-step execution when the task needs broad context.",
+        "model": "INHERIT",
+        "tools": "1 个工具",
+    },
+    {
+        "name": "statusline-setup",
+        "instructions": "Configure local status line behavior and desktop session display settings.",
+        "model": "SONNET",
+        "tools": "2 个工具",
+    },
+    {
+        "name": "Explore",
+        "instructions": "Fast codebase exploration for file discovery, keyword search, and lightweight repository questions.",
+        "model": "HAIKU",
+        "tools": "未限制工具",
+    },
+    {
+        "name": "Plan",
+        "instructions": "Create an implementation plan, identify risks, and break work into reviewable steps before execution.",
+        "model": "INHERIT",
+        "tools": "未限制工具",
+    },
+    {
+        "name": "Implement",
+        "instructions": "Apply scoped code changes following the selected plan and local project patterns.",
+        "model": "SONNET",
+        "tools": "未限制工具",
+    },
+    {
+        "name": "Review",
+        "instructions": "Review changes for regressions, missing tests, UI mismatches, and release readiness.",
+        "model": "SONNET",
+        "tools": "未限制工具",
+    },
+]
 
 PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
     "openai": {
@@ -1515,16 +1553,16 @@ class DesktopApp:
     def _agents_settings_state(self) -> dict[str, Any]:
         roles = [
             {
-                "name": role.name,
-                "instructions": role.instructions,
+                "name": role["name"],
+                "instructions": role["instructions"],
                 "source": "内置",
                 "status": "已生效",
-                "model": "继承默认模型",
-                "tools": "继承当前工具集",
+                "model": role["model"],
+                "tools": role["tools"],
             }
-            for role in DEFAULT_ROLES
+            for role in BUILTIN_AGENT_SETTINGS
         ]
-        prompt_chars = len("\n".join(f"{role.name}: {role.instructions}" for role in DEFAULT_ROLES))
+        prompt_chars = len("\n".join(f"{role['name']}: {role['instructions']}" for role in BUILTIN_AGENT_SETTINGS))
         return {
             "ok": True,
             "error": "",
@@ -1533,7 +1571,7 @@ class DesktopApp:
             "enabled": len(roles),
             "sources": 1 if roles else 0,
             "promptChars": prompt_chars,
-            "mode": "系统提示注入",
+            "mode": "内置 Agent 索引",
         }
 
     def _plugins_settings_state(self) -> dict[str, Any]:
@@ -1764,17 +1802,20 @@ class DesktopApp:
 
     def _skills_settings_state(self) -> dict[str, Any]:
         source_roots = self._skill_source_roots()
-        skills = []
+        skills: list[Skill] = []
         errors: list[str] = []
         for source, root in source_roots:
-            registry = SkillRegistry(
-                root,
-                source=source,
-                create=source == "project",
-                include_loose_markdown=source != "plugin",
-            )
             try:
-                skills.extend(registry.discover())
+                if source == "user" and root == Path.home() / ".claude" / "skills":
+                    skills.extend(self._discover_top_level_skills(root, source=source))
+                else:
+                    registry = SkillRegistry(
+                        root,
+                        source=source,
+                        create=source == "project",
+                        include_loose_markdown=source == "project",
+                    )
+                    skills.extend(registry.discover())
             except OSError as exc:
                 errors.append(f"{root}: {exc}")
         if errors and not skills:
@@ -1846,12 +1887,10 @@ class DesktopApp:
         home = Path.home()
         for source, root in [
             ("user", home / ".claude" / "skills"),
-            ("user", home / ".codex" / "skills"),
-            ("user", home / ".agents" / "skills"),
-            ("plugin", home / ".codex" / "plugins" / "cache"),
         ]:
             if root.exists():
                 roots.append((source, root))
+        roots.extend(("plugin", root) for root in self._claude_plugin_skill_roots())
         deduped: list[tuple[str, Path]] = []
         seen: set[Path] = set()
         for source, root in roots:
@@ -1864,6 +1903,58 @@ class DesktopApp:
             seen.add(resolved)
             deduped.append((source, root))
         return deduped
+
+    def _claude_plugin_skill_roots(self) -> list[Path]:
+        installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+        roots: list[Path] = []
+        if installed_file.exists():
+            try:
+                data = json.loads(installed_file.read_text(encoding="utf-8"))
+                plugins = data.get("plugins", {})
+                if isinstance(plugins, dict):
+                    for installs in plugins.values():
+                        if not isinstance(installs, list):
+                            continue
+                        for install in installs:
+                            if not isinstance(install, dict):
+                                continue
+                            install_path = Path(str(install.get("installPath", ""))).expanduser()
+                            skills_path = install_path / "skills"
+                            if skills_path.exists():
+                                roots.append(skills_path)
+            except (OSError, TypeError, json.JSONDecodeError):
+                pass
+        fallback = Path.home() / ".claude" / "plugins" / "cache"
+        if fallback.exists() and not roots:
+            for path in sorted(fallback.glob("*/*/*/skills")):
+                if path.exists():
+                    roots.append(path)
+        return roots
+
+    def _discover_top_level_skills(self, root: Path, *, source: str) -> list[Skill]:
+        if not root.exists():
+            return []
+        parser = SkillRegistry(root, source=source, create=False, include_loose_markdown=False)
+        skills: list[Skill] = []
+        for directory in sorted((path for path in root.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+            path = next((candidate for candidate in (directory / "SKILL.md", directory / "skill.md") if candidate.exists()), None)
+            if path is None:
+                continue
+            content = path.read_text(encoding="utf-8")
+            name, description, version, user_invocable = parser._metadata(path, content)
+            skills.append(
+                Skill(
+                    name=name,
+                    description=description,
+                    content=content,
+                    path=path,
+                    source=source,
+                    root=root,
+                    version=version,
+                    user_invocable=user_invocable,
+                )
+            )
+        return skills
 
     def _skill_source_name(self, source: str, path: Path, root: Path) -> str:
         if source == "project":
@@ -3025,6 +3116,21 @@ def render_desktop_html() -> str:
     .agents-eyebrow { color: #8a96a5; font-size: 12px; font-weight: 820; letter-spacing: .18em; text-transform: uppercase; }
     .agents-hero-title { margin-top: 8px; color: #202633; font-size: 24px; font-weight: 840; }
     .agents-hero-copy { margin-top: 10px; color: #627083; font-size: 15px; line-height: 1.55; }
+    .computer-use-overview {
+      border: 1px solid #dfe6ef; border-radius: 10px; background: #fbfcfe;
+      padding: 24px 26px; display: grid; gap: 22px;
+    }
+    .computer-use-copy { max-width: 720px; }
+    .computer-use-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .computer-use-stat {
+      border: 1px solid #dfe6ef; border-radius: 8px; background: white;
+      min-width: 0; padding: 16px 18px;
+    }
+    .computer-use-stat span { display: block; color: #7a8798; font-size: 13px; font-weight: 760; }
+    .computer-use-stat strong {
+      display: block; margin-top: 8px; color: #202633; font-size: 26px; line-height: 1.12;
+      white-space: normal; word-break: keep-all; overflow-wrap: anywhere;
+    }
     .agent-list { border: 1px solid #dfe6ef; border-radius: 8px; background: white; overflow: hidden; }
     .agent-card { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 14px; padding: 18px 20px; border-bottom: 1px solid #e7edf4; align-items: start; }
     .agent-card:last-child { border-bottom: 0; }
@@ -4000,6 +4106,10 @@ def render_desktop_html() -> str:
     body.theme-classic .skill-group,
     body.theme-classic .skill-summary-card,
     body.theme-classic .skills-search-shell,
+    body.theme-classic .agents-hero,
+    body.theme-classic .agent-list,
+    body.theme-classic .computer-use-overview,
+    body.theme-classic .computer-use-stat,
     body.theme-classic .mcp-stat,
     body.theme-classic .agent-card,
     body.theme-classic .memory-card,
@@ -4019,6 +4129,8 @@ def render_desktop_html() -> str:
     body.theme-classic .skill-source-title,
     body.theme-classic .skill-summary-card strong,
     body.theme-classic .skill-name,
+    body.theme-classic .agents-hero-title,
+    body.theme-classic .computer-use-stat strong,
     body.theme-classic .mcp-stat strong,
     body.theme-classic .agent-name,
     body.theme-classic .memory-title,
@@ -4033,6 +4145,9 @@ def render_desktop_html() -> str:
     body.theme-classic .skill-source-tokens,
     body.theme-classic .skill-summary-card span,
     body.theme-classic .skills-eyebrow,
+    body.theme-classic .agents-eyebrow,
+    body.theme-classic .agents-hero-copy,
+    body.theme-classic .computer-use-stat span,
     body.theme-classic .mcp-stat span,
     body.theme-classic .agent-instructions,
     body.theme-classic .agent-meta,
@@ -4257,6 +4372,10 @@ def render_desktop_html() -> str:
     body.theme-dark .skill-group,
     body.theme-dark .skill-summary-card,
     body.theme-dark .skills-search-shell,
+    body.theme-dark .agents-hero,
+    body.theme-dark .agent-list,
+    body.theme-dark .computer-use-overview,
+    body.theme-dark .computer-use-stat,
     body.theme-dark .mcp-stat,
     body.theme-dark .agent-card,
     body.theme-dark .memory-card,
@@ -4276,6 +4395,8 @@ def render_desktop_html() -> str:
     body.theme-dark .skill-source-title,
     body.theme-dark .skill-summary-card strong,
     body.theme-dark .skill-name,
+    body.theme-dark .agents-hero-title,
+    body.theme-dark .computer-use-stat strong,
     body.theme-dark .mcp-stat strong,
     body.theme-dark .agent-name,
     body.theme-dark .memory-title,
@@ -4290,6 +4411,9 @@ def render_desktop_html() -> str:
     body.theme-dark .skill-source-tokens,
     body.theme-dark .skill-summary-card span,
     body.theme-dark .skills-eyebrow,
+    body.theme-dark .agents-eyebrow,
+    body.theme-dark .agents-hero-copy,
+    body.theme-dark .computer-use-stat span,
     body.theme-dark .mcp-stat span,
     body.theme-dark .agent-instructions,
     body.theme-dark .agent-meta,
@@ -5104,15 +5228,17 @@ def render_desktop_html() -> str:
               </div>
               <div class="general-sections">
                 <section class="general-section">
-                  <div class="agents-hero">
-                    <div>
+                  <div class="computer-use-overview">
+                    <div class="computer-use-copy">
                       <div class="agents-eyebrow">本机能力</div>
                       <div class="agents-hero-title">桌面控制状态</div>
                       <div class="agents-hero-copy" id="computerUseNote">正在读取 Computer Use 状态。</div>
                     </div>
-                    <div class="mcp-stat"><span>平台</span><strong id="computerUsePlatform">-</strong></div>
-                    <div class="mcp-stat"><span>可用能力</span><strong id="computerUseAvailable">0</strong></div>
-                    <div class="mcp-stat"><span>授权</span><strong id="computerUsePermission">-</strong></div>
+                    <div class="computer-use-stats">
+                      <div class="computer-use-stat"><span>平台</span><strong id="computerUsePlatform">-</strong></div>
+                      <div class="computer-use-stat"><span>可用能力</span><strong id="computerUseAvailable">0</strong></div>
+                      <div class="computer-use-stat"><span>授权</span><strong id="computerUsePermission">-</strong></div>
+                    </div>
                   </div>
                 </section>
                 <section class="general-section">
@@ -5288,6 +5414,7 @@ def render_desktop_html() -> str:
     let desktopNetworkMode = 'direct';
     let desktopWebSearchProvider = 'auto';
     let desktopDataDirMode = 'system';
+    let latestSkillItems = [];
     let latestMemoryItems = [];
     let selectedMemoryId = '';
     let mcpAddScope = 'project-private';
@@ -5936,6 +6063,7 @@ def render_desktop_html() -> str:
     }
     function renderSkillsSettings(skillsState) {
       const skills = skillsState.skills || [];
+      latestSkillItems = skills;
       $('skillsTotal').textContent = String(skillsState.total || 0);
       $('skillsSources').textContent = String(skillsState.sources || 0);
       const totalTokens = skills.reduce((sum, skill) => sum + Number(skill.estimatedTokens || Math.ceil(Number(skill.contentLength || 0) / 4)), 0);
@@ -5950,7 +6078,7 @@ def render_desktop_html() -> str:
         result.classList.add('ok');
         result.classList.remove('bad');
       }
-      renderSkillList(skills);
+      renderSkillList(latestSkillItems);
     }
     function renderSkillList(skills) {
       const query = ($('skillsSearch').value || '').trim().toLowerCase();
@@ -6701,10 +6829,7 @@ def render_desktop_html() -> str:
     $('refreshTokenUsageSettings').onclick = refreshTokenUsageSettings;
     $('refreshTraceSettings').onclick = refreshTraceSettings;
     $('refreshDiagnosticsSettings').onclick = refreshDiagnosticsSettings;
-    $('skillsSearch').addEventListener('input', async () => {
-      const state = await api('/api/skills');
-      renderSkillsSettings(state);
-    });
+    $('skillsSearch').addEventListener('input', () => renderSkillList(latestSkillItems));
     $('memorySearch').addEventListener('input', renderMemoryList);
     async function switchProject(path) {
       const target = (path || $('projectPathInput').value).trim();

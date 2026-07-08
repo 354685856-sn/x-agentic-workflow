@@ -1204,13 +1204,16 @@ def test_desktop_agents_settings_reports_builtin_roles(tmp_path: Path) -> None:
     agents = app.state()["agentsSettings"]
 
     assert agents["ok"] is True
-    assert agents["mode"] == "系统提示注入"
-    assert agents["total"] == 3
-    assert agents["enabled"] == 3
+    assert agents["mode"] == "内置 Agent 索引"
+    assert agents["total"] == 6
+    assert agents["enabled"] == 6
     assert [role["name"] for role in agents["roles"]] == [
-        "architect",
-        "implementer",
-        "reviewer",
+        "general-purpose",
+        "statusline-setup",
+        "Explore",
+        "Plan",
+        "Implement",
+        "Review",
     ]
     assert all(role["status"] == "已生效" for role in agents["roles"])
 
