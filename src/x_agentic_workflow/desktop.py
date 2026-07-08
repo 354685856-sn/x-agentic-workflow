@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
+import sys
 import threading
 import webbrowser
 from datetime import datetime, timedelta, timezone
@@ -38,6 +40,7 @@ SCHEDULER_INTERVAL_SECONDS = 30
 MEMORY_PREVIEW_CHARS = 12_000
 MEMORY_SCAN_LIMIT = 120
 COMMAND_TIMEOUT_SECONDS = 120
+SETTINGS_LIST_LIMIT = 80
 
 PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
     "openai": {
@@ -263,6 +266,11 @@ class DesktopApp:
             "agentsSettings": self._agents_settings_state(),
             "skillsSettings": self._skills_settings_state(),
             "memorySettings": self._memory_settings_state(),
+            "pluginsSettings": self._plugins_settings_state(),
+            "computerUseSettings": self._computer_use_settings_state(),
+            "tokenUsageSettings": self._token_usage_settings_state(),
+            "traceSettings": self._trace_settings_state(),
+            "diagnosticsSettings": self._diagnostics_settings_state(),
             "generalSettings": {
                 "theme": self.config.desktop_theme,
                 "language": self.config.desktop_language,
@@ -1528,6 +1536,232 @@ class DesktopApp:
             "mode": "系统提示注入",
         }
 
+    def _plugins_settings_state(self) -> dict[str, Any]:
+        roots = self._plugin_source_roots()
+        plugins: list[dict[str, Any]] = []
+        seen: set[Path] = set()
+        errors: list[str] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            try:
+                candidates = [path for path in root.iterdir() if path.is_dir()]
+            except OSError as exc:
+                errors.append(f"{root}: {exc}")
+                continue
+            for candidate in sorted(candidates, key=lambda path: path.name.lower())[:SETTINGS_LIST_LIMIT]:
+                try:
+                    resolved = candidate.resolve()
+                except OSError:
+                    resolved = candidate
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                skill_count = len(list(candidate.rglob("SKILL.md"))) + len(list(candidate.rglob("skill.md")))
+                mcp_count = len(list(candidate.rglob("mcp.json"))) + len(list(candidate.rglob("server.json")))
+                manifest = next(
+                    (
+                        path
+                        for path in [
+                            candidate / "plugin.json",
+                            candidate / "package.json",
+                            candidate / "manifest.json",
+                        ]
+                        if path.exists()
+                    ),
+                    None,
+                )
+                plugins.append(
+                    {
+                        "name": candidate.name,
+                        "path": str(candidate),
+                        "root": str(root),
+                        "source": "Codex 插件缓存" if "cache" in root.parts else "Codex 插件",
+                        "skillCount": skill_count,
+                        "mcpCount": mcp_count,
+                        "manifest": str(manifest) if manifest else "",
+                    }
+                )
+        return {
+            "ok": not errors,
+            "error": "; ".join(errors),
+            "roots": [str(root) for root in roots],
+            "plugins": plugins,
+            "total": len(plugins),
+            "withSkills": sum(1 for item in plugins if int(item["skillCount"]) > 0),
+            "withMcp": sum(1 for item in plugins if int(item["mcpCount"]) > 0),
+        }
+
+    def _plugin_source_roots(self) -> list[Path]:
+        default_config_file = Path.home() / ".x-agentic-workflow" / "config.json"
+        if self.config.config_file != default_config_file:
+            return [
+                self.config.config_file.parent / "plugins" / "cache",
+                self.config.config_file.parent / "plugins" / "installed",
+            ]
+        return [
+            Path.home() / ".codex" / "plugins" / "cache",
+            Path.home() / ".codex" / "plugins" / "installed",
+        ]
+
+    def _computer_use_settings_state(self) -> dict[str, Any]:
+        platform = "macOS" if sys.platform == "darwin" else os.name
+        screenshot_command = shutil.which("screencapture")
+        automation_command = shutil.which("osascript")
+        browser_command = shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chrome")
+        capabilities = [
+            {
+                "name": "屏幕截图",
+                "status": "可用" if screenshot_command else "未检测到",
+                "detail": screenshot_command or "macOS screencapture 不在 PATH 中。",
+            },
+            {
+                "name": "桌面自动化",
+                "status": "可用" if automation_command else "未检测到",
+                "detail": automation_command or "需要系统自动化授权后才能控制应用。",
+            },
+            {
+                "name": "浏览器控制",
+                "status": "可选" if browser_command else "未检测到",
+                "detail": browser_command or "可通过浏览器调试端口或 Playwright 增强。",
+            },
+        ]
+        available = sum(1 for item in capabilities if item["status"] in {"可用", "可选"})
+        return {
+            "ok": True,
+            "platform": platform,
+            "enabled": False,
+            "available": available,
+            "total": len(capabilities),
+            "permission": "需要逐次授权",
+            "capabilities": capabilities,
+            "note": "当前桌面端只展示本机能力检查；实际控制会继续走命令审批和系统权限。",
+        }
+
+    def _token_usage_settings_state(self) -> dict[str, Any]:
+        sessions = self.sessions.list_sessions()
+        items: list[dict[str, Any]] = []
+        total_messages = 0
+        total_chars = 0
+        for session_id in sessions[-SETTINGS_LIST_LIMIT:]:
+            payload = self.sessions.load_payload(session_id)
+            messages = payload.get("messages", [])
+            if not isinstance(messages, list):
+                messages = []
+            chars = sum(len(str(message.get("content", ""))) for message in messages if isinstance(message, dict))
+            total_messages += len(messages)
+            total_chars += chars
+            summary = self.sessions.session_summary(session_id)
+            items.append(
+                {
+                    "id": session_id,
+                    "title": summary.get("title", session_id),
+                    "updatedLabel": summary.get("updatedLabel", ""),
+                    "messages": len(messages),
+                    "estimatedTokens": max(0, round(chars / 4)),
+                }
+            )
+        items.sort(key=lambda item: str(item["updatedLabel"]), reverse=True)
+        return {
+            "ok": True,
+            "sessionCount": len(sessions),
+            "sampledSessions": len(items),
+            "messageCount": total_messages,
+            "estimatedTokens": max(0, round(total_chars / 4)),
+            "maxTokens": self.config.max_tokens,
+            "items": items[:20],
+            "note": "当前为本机会话文本估算，不包含服务商账单口径。",
+        }
+
+    def _trace_settings_state(self) -> dict[str, Any]:
+        trace_dir = self.config.config_file.parent / "traces"
+        files: list[dict[str, Any]] = []
+        total_size = 0
+        if trace_dir.exists():
+            candidates: list[tuple[float, Path]] = []
+            for path in trace_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                candidates.append((stat.st_mtime, path))
+            for _, path in sorted(candidates, reverse=True)[:SETTINGS_LIST_LIMIT]:
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                total_size += stat.st_size
+                files.append(
+                    {
+                        "name": path.name,
+                        "path": str(path),
+                        "relativePath": str(path.relative_to(trace_dir)),
+                        "sizeBytes": stat.st_size,
+                        "updated": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    }
+                )
+        return {
+            "ok": True,
+            "enabled": self.config.desktop_trace_enabled,
+            "dir": str(trace_dir),
+            "exists": trace_dir.exists(),
+            "total": len(files),
+            "sizeBytes": total_size,
+            "files": files[:20],
+        }
+
+    def _diagnostics_settings_state(self) -> dict[str, Any]:
+        mcp = self._mcp_settings_state()
+        skills = self._skills_settings_state()
+        plugins = self._plugins_settings_state()
+        checks = [
+            {
+                "name": "工作目录",
+                "status": "pass" if self.config.workdir.exists() else "fail",
+                "detail": str(self.config.workdir),
+            },
+            {
+                "name": "配置文件",
+                "status": "pass" if self.config.config_file.exists() else "warn",
+                "detail": str(self.config.config_file),
+            },
+            {
+                "name": "会话目录",
+                "status": "pass" if os.access(self.config.sessions_dir.parent, os.W_OK) else "fail",
+                "detail": str(self.config.sessions_dir),
+            },
+            {
+                "name": "服务商密钥",
+                "status": "pass" if self.config.api_key else "warn",
+                "detail": self.config.provider.api_key_env,
+            },
+            {
+                "name": "MCP 配置",
+                "status": "pass" if mcp.get("ok") else "fail",
+                "detail": f"{mcp.get('total', 0)} 个服务",
+            },
+            {
+                "name": "Skills 索引",
+                "status": "pass" if skills.get("ok") else "fail",
+                "detail": f"{skills.get('total', 0)} 个技能",
+            },
+            {
+                "name": "插件索引",
+                "status": "pass" if plugins.get("ok") else "warn",
+                "detail": f"{plugins.get('total', 0)} 个插件",
+            },
+        ]
+        return {
+            "ok": all(item["status"] != "fail" for item in checks),
+            "checks": checks,
+            "pass": sum(1 for item in checks if item["status"] == "pass"),
+            "warn": sum(1 for item in checks if item["status"] == "warn"),
+            "fail": sum(1 for item in checks if item["status"] == "fail"),
+            "workdir": str(self.config.workdir),
+        }
+
     def _skills_settings_state(self) -> dict[str, Any]:
         source_roots = self._skill_source_roots()
         skills = []
@@ -1738,6 +1972,21 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
             if request_path == "/api/memory/preview":
                 memory_id = parse_qs(parsed.query).get("id", [""])[0]
                 self._send_json(app.memory_preview(memory_id))
+                return
+            if request_path == "/api/plugins":
+                self._send_json(app.state()["pluginsSettings"])
+                return
+            if request_path == "/api/computer-use":
+                self._send_json(app.state()["computerUseSettings"])
+                return
+            if request_path == "/api/token-usage":
+                self._send_json(app.state()["tokenUsageSettings"])
+                return
+            if request_path == "/api/trace":
+                self._send_json(app.state()["traceSettings"])
+                return
+            if request_path == "/api/diagnostics":
+                self._send_json(app.state()["diagnosticsSettings"])
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -3057,17 +3306,10 @@ def render_desktop_html() -> str:
       background: currentColor; border-radius: 999px;
     }
     .github-mark {
-      width: 30px; height: 30px; border-radius: 999px; background: #7d8795; color: #f3f6fa;
-      display: grid; place-items: center; position: relative;
+      width: 30px; height: 30px; display: block; color: #7d8795;
     }
-    .github-mark::before {
-      content: ""; width: 16px; height: 13px; border-radius: 9px 9px 6px 6px;
-      background: currentColor; transform: translateY(2px);
-    }
-    .github-mark::after {
-      content: ""; position: absolute; top: 5px; left: 7px; width: 16px; height: 10px;
-      border-radius: 3px 3px 0 0; border-top: 5px solid currentColor;
-      border-left: 4px solid transparent; border-right: 4px solid transparent;
+    .github-mark svg {
+      width: 100%; height: 100%; display: block; fill: currentColor;
     }
     .sidebar-search-row {
       display: grid; grid-template-columns: 1fr 56px 56px; gap: 10px;
@@ -3644,6 +3886,22 @@ def render_desktop_html() -> str:
     body.theme-classic .relative-age {
       color: var(--classic-muted);
     }
+    body.theme-classic .brand-action,
+    body.theme-classic .github-mark {
+      color: var(--classic-muted);
+    }
+    body.theme-classic .shortcut,
+    body.theme-classic .search-shortcut {
+      background: #f7e8dc;
+      border-color: #e5c7b6;
+      color: #8a604f;
+    }
+    body.theme-classic .project-icon.folder-icon {
+      color: var(--classic-text);
+    }
+    body.theme-classic .project-icon.folder-icon::before {
+      background: var(--classic-bg);
+    }
     body.theme-classic .search-shell,
     body.theme-classic .sidebar-tool-btn,
     body.theme-classic .account-card {
@@ -3741,7 +3999,15 @@ def render_desktop_html() -> str:
     body.theme-classic .skills-hero,
     body.theme-classic .skill-group,
     body.theme-classic .skill-summary-card,
-    body.theme-classic .skills-search-shell {
+    body.theme-classic .skills-search-shell,
+    body.theme-classic .mcp-stat,
+    body.theme-classic .agent-card,
+    body.theme-classic .memory-card,
+    body.theme-classic .memory-explorer-left,
+    body.theme-classic .memory-explorer-right,
+    body.theme-classic .memory-content,
+    body.theme-classic .mcp-empty,
+    body.theme-classic .memory-empty {
       background: var(--classic-panel);
       border-color: var(--classic-border);
     }
@@ -3752,7 +4018,11 @@ def render_desktop_html() -> str:
     body.theme-classic .skills-hero-title,
     body.theme-classic .skill-source-title,
     body.theme-classic .skill-summary-card strong,
-    body.theme-classic .skill-name {
+    body.theme-classic .skill-name,
+    body.theme-classic .mcp-stat strong,
+    body.theme-classic .agent-name,
+    body.theme-classic .memory-title,
+    body.theme-classic .memory-preview-title {
       color: var(--classic-text);
     }
     body.theme-classic .skills-hero-copy,
@@ -3762,7 +4032,13 @@ def render_desktop_html() -> str:
     body.theme-classic .skill-source-count,
     body.theme-classic .skill-source-tokens,
     body.theme-classic .skill-summary-card span,
-    body.theme-classic .skills-eyebrow {
+    body.theme-classic .skills-eyebrow,
+    body.theme-classic .mcp-stat span,
+    body.theme-classic .agent-instructions,
+    body.theme-classic .agent-meta,
+    body.theme-classic .memory-summary,
+    body.theme-classic .memory-meta,
+    body.theme-classic .memory-preview-path {
       color: var(--classic-muted);
     }
     body.theme-classic .skills-search {
@@ -3848,6 +4124,27 @@ def render_desktop_html() -> str:
     body.theme-dark .session-meta,
     body.theme-dark .relative-age {
       color: #a8a19b;
+    }
+    body.theme-dark .brand-action,
+    body.theme-dark .github-mark {
+      color: #a8a19b;
+    }
+    body.theme-dark .shortcut,
+    body.theme-dark .search-shortcut {
+      background: #282624;
+      border-color: #3a3734;
+      color: #d4cec8;
+      box-shadow: none;
+    }
+    body.theme-dark .brand-action:hover {
+      background: #1d1c1b;
+      color: var(--dark-text);
+    }
+    body.theme-dark .project-icon.folder-icon {
+      color: var(--dark-text);
+    }
+    body.theme-dark .project-icon.folder-icon::before {
+      background: #151515;
     }
     body.theme-dark .search-shell,
     body.theme-dark .sidebar-tool-btn,
@@ -3959,7 +4256,15 @@ def render_desktop_html() -> str:
     body.theme-dark .skills-hero,
     body.theme-dark .skill-group,
     body.theme-dark .skill-summary-card,
-    body.theme-dark .skills-search-shell {
+    body.theme-dark .skills-search-shell,
+    body.theme-dark .mcp-stat,
+    body.theme-dark .agent-card,
+    body.theme-dark .memory-card,
+    body.theme-dark .memory-explorer-left,
+    body.theme-dark .memory-explorer-right,
+    body.theme-dark .memory-content,
+    body.theme-dark .mcp-empty,
+    body.theme-dark .memory-empty {
       background: var(--dark-panel);
       border-color: var(--dark-border);
     }
@@ -3970,7 +4275,11 @@ def render_desktop_html() -> str:
     body.theme-dark .skills-hero-title,
     body.theme-dark .skill-source-title,
     body.theme-dark .skill-summary-card strong,
-    body.theme-dark .skill-name {
+    body.theme-dark .skill-name,
+    body.theme-dark .mcp-stat strong,
+    body.theme-dark .agent-name,
+    body.theme-dark .memory-title,
+    body.theme-dark .memory-preview-title {
       color: var(--dark-text);
     }
     body.theme-dark .skills-hero-copy,
@@ -3980,8 +4289,26 @@ def render_desktop_html() -> str:
     body.theme-dark .skill-source-count,
     body.theme-dark .skill-source-tokens,
     body.theme-dark .skill-summary-card span,
-    body.theme-dark .skills-eyebrow {
+    body.theme-dark .skills-eyebrow,
+    body.theme-dark .mcp-stat span,
+    body.theme-dark .agent-instructions,
+    body.theme-dark .agent-meta,
+    body.theme-dark .memory-summary,
+    body.theme-dark .memory-meta,
+    body.theme-dark .memory-preview-path {
       color: var(--dark-muted);
+    }
+    body.theme-dark .badge {
+      background: #252422;
+      color: #bfb7b0;
+    }
+    body.theme-dark .badge.ok {
+      background: rgba(97, 180, 128, .16);
+      color: #91d39d;
+    }
+    body.theme-dark .badge.hot {
+      background: rgba(255, 181, 159, .16);
+      color: var(--dark-accent);
     }
     body.theme-dark .skills-search {
       color: var(--dark-text);
@@ -4063,7 +4390,25 @@ def render_desktop_html() -> str:
       <div class="brand">
         <div class="brand-left"><span class="logo">C</span><span>cat-<em>agentic</em></span></div>
         <div class="brand-actions">
-          <button class="brand-action" id="githubBtn" title="打开 GitHub 仓库"><span class="github-mark" aria-hidden="true"></span></button>
+          <button class="brand-action" id="githubBtn" title="打开 GitHub 仓库">
+            <span class="github-mark" aria-hidden="true">
+              <svg viewBox="0 0 98 96" focusable="false">
+                <path d="
+                  M48.9 0C21.9 0 0 22 0 49.1c0 21.7 14 40 33.5 46.5 2.5.5
+                  3.4-1.1 3.4-2.4 0-1.2 0-5.1-.1-9.3-13.6 3-16.5-5.9-16.5-5.9
+                  -2.2-5.7-5.4-7.2-5.4-7.2-4.5-3.1.3-3 .3-3 4.9.3 7.5
+                  5.1 7.5 5.1 4.4 7.5 11.5 5.4 14.3 4.1.4-3.2 1.7-5.4
+                  3.1-6.6-10.9-1.2-22.3-5.5-22.3-24.3 0-5.4 1.9-9.8
+                  5.1-13.2-.5-1.2-2.2-6.3.5-13 0 0 4.1-1.3 13.5 5
+                  3.9-1.1 8.1-1.6 12.3-1.6s8.4.5 12.3 1.6c9.4-6.3
+                  13.5-5 13.5-5 2.7 6.7 1 11.8.5 13 3.2 3.5 5.1 7.9
+                  5.1 13.2 0 18.9-11.5 23.1-22.4 24.3 1.8 1.5 3.3 4.5
+                  3.3 9.1 0 6.6-.1 11.9-.1 13.5 0 1.3.9 2.9 3.4 2.4
+                  C84 89 98 70.7 98 49.1 98 22 76.1 0 48.9 0Z
+                "/>
+              </svg>
+            </span>
+          </button>
           <button class="brand-action" id="sidebarToggle" title="折叠侧栏">‹</button>
         </div>
       </div>
@@ -4153,11 +4498,11 @@ def render_desktop_html() -> str:
               <button data-settings-view="agents"><span>▦</span><span class="settings-nav-label">Agents</span></button>
               <button data-settings-view="skills"><span>✦</span><span class="settings-nav-label">技能</span></button>
               <button data-settings-view="memory"><span>▧</span><span class="settings-nav-label">记忆</span></button>
-              <button class="pending" disabled><span>⌘</span><span class="settings-nav-label">插件</span><span class="settings-nav-status">后续</span></button>
-              <button class="pending" disabled><span>◉</span><span class="settings-nav-label">Computer Use</span><span class="settings-nav-status">后续</span></button>
-              <button class="pending" disabled><span>▥</span><span class="settings-nav-label">Token 用量</span><span class="settings-nav-status">后续</span></button>
-              <button class="pending" disabled><span>⌘</span><span class="settings-nav-label">Trace</span><span class="settings-nav-status">后续</span></button>
-              <button class="pending" disabled><span>≋</span><span class="settings-nav-label">诊断</span><span class="settings-nav-status">后续</span></button>
+              <button data-settings-view="plugins"><span>⌘</span><span class="settings-nav-label">插件</span></button>
+              <button data-settings-view="computerUse"><span>◉</span><span class="settings-nav-label">Computer Use</span></button>
+              <button data-settings-view="tokenUsage"><span>▥</span><span class="settings-nav-label">Token 用量</span></button>
+              <button data-settings-view="trace"><span>⌘</span><span class="settings-nav-label">Trace</span></button>
+              <button data-settings-view="diagnostics"><span>≋</span><span class="settings-nav-label">诊断</span></button>
             </div>
             <div class="settings-panel active" id="providerSettingsPanel">
               <div class="settings-head">
@@ -4724,6 +5069,137 @@ def render_desktop_html() -> str:
                 </section>
               </div>
             </div>
+            <div class="settings-panel" id="pluginsSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">插件</div>
+                  <div class="settings-subtitle">浏览本机 Codex 插件缓存，查看插件来源、技能数量和 MCP 入口。</div>
+                </div>
+                <button class="secondary-btn" id="refreshPluginsSettings">刷新</button>
+              </div>
+              <div class="skills-browser">
+                <section class="skills-hero">
+                  <div>
+                    <div class="skills-eyebrow">插件浏览器</div>
+                    <div class="skills-hero-title"><span>⌘</span>本机插件索引</div>
+                    <div class="skills-hero-copy">只读取插件目录结构和 manifest 路径，不读取密钥值。插件能力会继续通过 Skills、MCP 和本机运行时逐步接入。</div>
+                  </div>
+                  <div class="skills-summary-grid">
+                    <div class="skill-summary-card"><span>⌘ 插件</span><strong id="pluginsTotal">0</strong></div>
+                    <div class="skill-summary-card"><span>✦ 含技能</span><strong id="pluginsWithSkills">0</strong></div>
+                    <div class="skill-summary-card"><span>▤ 含 MCP</span><strong id="pluginsWithMcp">0</strong></div>
+                  </div>
+                </section>
+                <div class="settings-result" id="pluginsResult"></div>
+                <div class="skill-group-grid" id="pluginsList"></div>
+              </div>
+            </div>
+            <div class="settings-panel" id="computerUseSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">Computer Use</div>
+                  <div class="settings-subtitle">检查本机截图、自动化和浏览器控制能力。实际控制仍需要用户授权和命令审批。</div>
+                </div>
+                <button class="secondary-btn" id="refreshComputerUseSettings">刷新</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <div class="agents-hero">
+                    <div>
+                      <div class="agents-eyebrow">本机能力</div>
+                      <div class="agents-hero-title">桌面控制状态</div>
+                      <div class="agents-hero-copy" id="computerUseNote">正在读取 Computer Use 状态。</div>
+                    </div>
+                    <div class="mcp-stat"><span>平台</span><strong id="computerUsePlatform">-</strong></div>
+                    <div class="mcp-stat"><span>可用能力</span><strong id="computerUseAvailable">0</strong></div>
+                    <div class="mcp-stat"><span>授权</span><strong id="computerUsePermission">-</strong></div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>能力清单</h3>
+                  <div class="agent-list" id="computerUseCapabilities"></div>
+                </section>
+              </div>
+            </div>
+            <div class="settings-panel" id="tokenUsageSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">Token 用量</div>
+                  <div class="settings-subtitle">从本机会话记录估算消息规模，便于查看趋势；不等同于服务商账单。</div>
+                </div>
+                <button class="secondary-btn" id="refreshTokenUsageSettings">刷新</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <div class="skills-summary-grid">
+                    <div class="mcp-stat"><span>会话</span><strong id="tokenSessionCount">0</strong></div>
+                    <div class="mcp-stat"><span>消息</span><strong id="tokenMessageCount">0</strong></div>
+                    <div class="mcp-stat"><span>估算 Token</span><strong id="tokenEstimated">0</strong></div>
+                    <div class="mcp-stat"><span>单次上限</span><strong id="tokenMax">0</strong></div>
+                  </div>
+                  <div class="settings-result" id="tokenUsageResult"></div>
+                </section>
+                <section class="general-section">
+                  <h3>最近会话估算</h3>
+                  <div class="memory-list" id="tokenUsageList"></div>
+                </section>
+              </div>
+            </div>
+            <div class="settings-panel" id="traceSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">Trace</div>
+                  <div class="settings-subtitle">查看本机 trace 目录、文件数量和最近记录。Trace 开关在“通用”页保存。</div>
+                </div>
+                <button class="secondary-btn" id="refreshTraceSettings">刷新</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <h3>Trace 状态</h3>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">收集 Agent Trace</div><div class="setting-help" id="traceSettingsStatus">正在读取。</div></div>
+                      <span class="badge" id="traceEnabledBadge">-</span>
+                    </div>
+                    <div class="mcp-config-path" id="traceDir">-</div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <div class="skills-summary-grid">
+                    <div class="mcp-stat"><span>文件</span><strong id="traceFileCount">0</strong></div>
+                    <div class="mcp-stat"><span>大小</span><strong id="traceSize">0</strong></div>
+                    <div class="mcp-stat"><span>目录</span><strong id="traceDirExists">-</strong></div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>最近 Trace 文件</h3>
+                  <div class="memory-list" id="traceFileList"></div>
+                </section>
+              </div>
+            </div>
+            <div class="settings-panel" id="diagnosticsSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">诊断</div>
+                  <div class="settings-subtitle">聚合本机配置、目录、服务商、MCP、Skills 和插件索引状态。</div>
+                </div>
+                <button class="primary-btn" id="refreshDiagnosticsSettings">重新诊断</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <div class="skills-summary-grid">
+                    <div class="mcp-stat"><span>通过</span><strong id="diagnosticsPass">0</strong></div>
+                    <div class="mcp-stat"><span>警告</span><strong id="diagnosticsWarn">0</strong></div>
+                    <div class="mcp-stat"><span>失败</span><strong id="diagnosticsFail">0</strong></div>
+                  </div>
+                  <div class="settings-result" id="diagnosticsResult"></div>
+                </section>
+                <section class="general-section">
+                  <h3>检查项</h3>
+                  <div class="agent-list" id="diagnosticsChecks"></div>
+                </section>
+              </div>
+            </div>
           </div>
         </div>
         <div class="screen" id="scheduledScreen">
@@ -4849,6 +5325,11 @@ def render_desktop_html() -> str:
       renderAgentsSettings(state.agentsSettings || {});
       renderSkillsSettings(state.skillsSettings || {});
       renderMemorySettings(state.memorySettings || {});
+      renderPluginsSettings(state.pluginsSettings || {});
+      renderComputerUseSettings(state.computerUseSettings || {});
+      renderTokenUsageSettings(state.tokenUsageSettings || {});
+      renderTraceSettings(state.traceSettings || {});
+      renderDiagnosticsSettings(state.diagnosticsSettings || {});
       if (state.providerSave) showProviderResult(state.providerSave);
       if (state.providerTest) showProviderResult(state.providerTest);
       if (state.mcpSave) showMcpResult(state.mcpSave);
@@ -5624,6 +6105,187 @@ def render_desktop_html() -> str:
         button.textContent = '刷新';
       }
     }
+    function renderPluginsSettings(pluginsState) {
+      const plugins = pluginsState.plugins || [];
+      $('pluginsTotal').textContent = String(pluginsState.total || 0);
+      $('pluginsWithSkills').textContent = String(pluginsState.withSkills || 0);
+      $('pluginsWithMcp').textContent = String(pluginsState.withMcp || 0);
+      const result = $('pluginsResult');
+      if (pluginsState.ok === false) {
+        result.textContent = `插件读取失败：${pluginsState.error || '未知错误'}`;
+        result.classList.add('bad');
+        result.classList.remove('ok');
+      } else {
+        result.textContent = `已扫描 ${plugins.length} 个本机插件目录。`;
+        result.classList.add('ok');
+        result.classList.remove('bad');
+      }
+      const list = $('pluginsList');
+      if (!plugins.length) {
+        list.innerHTML = '<div class="skill-empty">暂无本机插件缓存。</div>';
+        return;
+      }
+      list.innerHTML = `<section class="skill-group">
+        <div class="skill-group-head">
+          <div>
+            <div class="skill-source-row"><span class="skill-source-icon plugin">⌘</span><span class="skill-source-title">Codex 插件</span><span class="skill-source-count">${plugins.length}</span></div>
+            <div class="skill-source-hint">展示本机插件目录、Skills 和 MCP 入口数量。</div>
+          </div>
+          <div class="skill-source-tokens">${escapeHtml((pluginsState.roots || []).filter(Boolean).join(' · '))}</div>
+        </div>
+        <div class="skill-list">
+          ${plugins.map(plugin => `<button class="skill-card" type="button" title="${escapeHtml(plugin.path || '')}">
+            <span class="skill-card-icon">⌘</span>
+            <span>
+              <span class="skill-name-row"><span class="skill-name">${escapeHtml(plugin.name || 'unnamed')}</span><span class="badge">${escapeHtml(plugin.source || '插件')}</span></span>
+              <span class="skill-description">${escapeHtml(plugin.manifest ? `Manifest: ${plugin.manifest}` : '未检测到 manifest 文件。')}</span>
+              <span class="skill-meta"><span>${escapeHtml(plugin.path || '')}</span><span>${Number(plugin.skillCount || 0)} skills</span><span>${Number(plugin.mcpCount || 0)} MCP</span></span>
+            </span>
+            <span class="skill-card-arrow">›</span>
+          </button>`).join('')}
+        </div>
+      </section>`;
+    }
+    async function refreshPluginsSettings() {
+      const button = $('refreshPluginsSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderPluginsSettings(await api('/api/plugins'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderComputerUseSettings(computerUse) {
+      const capabilities = computerUse.capabilities || [];
+      $('computerUsePlatform').textContent = computerUse.platform || '-';
+      $('computerUseAvailable').textContent = `${computerUse.available || 0}/${computerUse.total || capabilities.length}`;
+      $('computerUsePermission').textContent = computerUse.permission || '-';
+      $('computerUseNote').textContent = computerUse.note || '本机能力检查已读取。';
+      const list = $('computerUseCapabilities');
+      if (!capabilities.length) {
+        list.innerHTML = '<div class="mcp-empty">暂无能力检查结果。</div>';
+        return;
+      }
+      list.innerHTML = capabilities.map(item => {
+        const badge = item.status === '可用' ? 'ok' : item.status === '未检测到' ? 'hot' : '';
+        return `<div class="agent-card">
+          <div class="agent-icon">◉</div>
+          <div>
+            <div class="agent-name-row"><span class="agent-name">${escapeHtml(item.name || '能力')}</span><span class="badge ${badge}">${escapeHtml(item.status || '未知')}</span></div>
+            <div class="agent-instructions">${escapeHtml(item.detail || '')}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    async function refreshComputerUseSettings() {
+      const button = $('refreshComputerUseSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderComputerUseSettings(await api('/api/computer-use'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderTokenUsageSettings(tokenState) {
+      const items = tokenState.items || [];
+      $('tokenSessionCount').textContent = String(tokenState.sessionCount || 0);
+      $('tokenMessageCount').textContent = String(tokenState.messageCount || 0);
+      $('tokenEstimated').textContent = `约 ${formatCompactNumber(tokenState.estimatedTokens || 0)}`;
+      $('tokenMax').textContent = formatCompactNumber(tokenState.maxTokens || 0);
+      $('tokenUsageResult').textContent = tokenState.note || '本机会话 token 估算已读取。';
+      const list = $('tokenUsageList');
+      if (!items.length) {
+        list.innerHTML = '<div class="memory-empty">暂无会话用量记录。</div>';
+        return;
+      }
+      list.innerHTML = items.map(item => `<div class="memory-card">
+        <div class="skill-head"><div class="memory-title">${escapeHtml(item.title || item.id || '未命名会话')}</div><span class="badge">${escapeHtml(item.updatedLabel || '')}</span></div>
+        <div class="memory-summary">${Number(item.messages || 0)} 条消息 · 约 ${formatCompactNumber(item.estimatedTokens || 0)} tokens</div>
+        <div class="memory-meta">${escapeHtml(item.id || '')}</div>
+      </div>`).join('');
+    }
+    async function refreshTokenUsageSettings() {
+      const button = $('refreshTokenUsageSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderTokenUsageSettings(await api('/api/token-usage'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderTraceSettings(traceState) {
+      const files = traceState.files || [];
+      $('traceEnabledBadge').textContent = traceState.enabled ? '已启用' : '已关闭';
+      $('traceEnabledBadge').className = traceState.enabled ? 'badge ok' : 'badge';
+      $('traceSettingsStatus').textContent = traceState.enabled ? '新会话会继续写入本机 trace 目录。' : 'Trace 已关闭，可在通用页开启。';
+      $('traceDir').textContent = traceState.dir || '-';
+      $('traceFileCount').textContent = String(traceState.total || 0);
+      $('traceSize').textContent = `${formatCompactNumber(traceState.sizeBytes || 0)}B`;
+      $('traceDirExists').textContent = traceState.exists ? '存在' : '未创建';
+      const list = $('traceFileList');
+      if (!files.length) {
+        list.innerHTML = '<div class="memory-empty">暂无 Trace 文件。</div>';
+        return;
+      }
+      list.innerHTML = files.map(file => `<div class="memory-card">
+        <div class="skill-head"><div class="memory-title">${escapeHtml(file.name || 'trace')}</div><span class="badge">${escapeHtml(file.updated || '')}</span></div>
+        <div class="memory-summary">${escapeHtml(file.relativePath || '')}</div>
+        <div class="memory-meta">${formatCompactNumber(file.sizeBytes || 0)}B · ${escapeHtml(file.path || '')}</div>
+      </div>`).join('');
+    }
+    async function refreshTraceSettings() {
+      const button = $('refreshTraceSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderTraceSettings(await api('/api/trace'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderDiagnosticsSettings(diag) {
+      const checks = diag.checks || [];
+      $('diagnosticsPass').textContent = String(diag.pass || 0);
+      $('diagnosticsWarn').textContent = String(diag.warn || 0);
+      $('diagnosticsFail').textContent = String(diag.fail || 0);
+      const result = $('diagnosticsResult');
+      result.textContent = diag.ok ? `诊断通过：${diag.workdir || ''}` : `诊断发现失败项：${diag.workdir || ''}`;
+      result.classList.toggle('ok', !!diag.ok);
+      result.classList.toggle('bad', !diag.ok);
+      const list = $('diagnosticsChecks');
+      if (!checks.length) {
+        list.innerHTML = '<div class="mcp-empty">暂无诊断项。</div>';
+        return;
+      }
+      list.innerHTML = checks.map(check => {
+        const badge = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'hot' : '';
+        return `<div class="agent-card">
+          <div class="agent-icon">≋</div>
+          <div>
+            <div class="agent-name-row"><span class="agent-name">${escapeHtml(check.name || '检查')}</span><span class="badge ${badge}">${escapeHtml(check.status || 'unknown')}</span></div>
+            <div class="agent-instructions">${escapeHtml(check.detail || '')}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    async function refreshDiagnosticsSettings() {
+      const button = $('refreshDiagnosticsSettings');
+      button.disabled = true;
+      button.textContent = '诊断中...';
+      try {
+        renderDiagnosticsSettings(await api('/api/diagnostics'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '重新诊断';
+      }
+    }
     function showCompletionNotification(state) {
       if (!desktopNotificationsEnabled || !('Notification' in window) || Notification.permission !== 'granted') return;
       const lastMessage = (state.messages || []).at(-1);
@@ -5930,6 +6592,11 @@ def render_desktop_html() -> str:
         $('agentsSettingsPanel').classList.toggle('active', view === 'agents');
         $('skillsSettingsPanel').classList.toggle('active', view === 'skills');
         $('memorySettingsPanel').classList.toggle('active', view === 'memory');
+        $('pluginsSettingsPanel').classList.toggle('active', view === 'plugins');
+        $('computerUseSettingsPanel').classList.toggle('active', view === 'computerUse');
+        $('tokenUsageSettingsPanel').classList.toggle('active', view === 'tokenUsage');
+        $('traceSettingsPanel').classList.toggle('active', view === 'trace');
+        $('diagnosticsSettingsPanel').classList.toggle('active', view === 'diagnostics');
         if (view === 'memory' && selectedMemoryId) selectMemory(selectedMemoryId);
       };
     });
@@ -6029,6 +6696,11 @@ def render_desktop_html() -> str:
     $('refreshSkillsSettings').onclick = refreshSkillsSettings;
     $('refreshMemorySettings').onclick = refreshMemorySettings;
     $('refreshMemoryInline').onclick = refreshMemorySettings;
+    $('refreshPluginsSettings').onclick = refreshPluginsSettings;
+    $('refreshComputerUseSettings').onclick = refreshComputerUseSettings;
+    $('refreshTokenUsageSettings').onclick = refreshTokenUsageSettings;
+    $('refreshTraceSettings').onclick = refreshTraceSettings;
+    $('refreshDiagnosticsSettings').onclick = refreshDiagnosticsSettings;
     $('skillsSearch').addEventListener('input', async () => {
       const state = await api('/api/skills');
       renderSkillsSettings(state);

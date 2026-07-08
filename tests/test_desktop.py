@@ -78,6 +78,21 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "/api/skills" in html
     assert "/api/memory" in html
     assert "/api/memory/preview" in html
+    assert "/api/plugins" in html
+    assert "/api/computer-use" in html
+    assert "/api/token-usage" in html
+    assert "/api/trace" in html
+    assert "/api/diagnostics" in html
+    assert 'id="pluginsSettingsPanel"' in html
+    assert 'id="computerUseSettingsPanel"' in html
+    assert 'id="tokenUsageSettingsPanel"' in html
+    assert 'id="traceSettingsPanel"' in html
+    assert 'id="diagnosticsSettingsPanel"' in html
+    assert 'data-settings-view="plugins"' in html
+    assert 'data-settings-view="computerUse"' in html
+    assert 'data-settings-view="tokenUsage"' in html
+    assert 'data-settings-view="trace"' in html
+    assert 'data-settings-view="diagnostics"' in html
     assert 'data-settings-view="general"' in html
     assert 'data-settings-view="h5"' in html
     assert 'data-settings-view="terminal"' in html
@@ -1236,6 +1251,72 @@ def test_desktop_skills_settings_read_local_skill_summaries(tmp_path: Path) -> N
     assert skills["skills"][0]["description"] == "Review code changes for regressions."
     assert skills["skills"][0]["relativePath"] == "coding/review.md"
     assert "full body should not be returned" not in json.dumps(skills)
+
+
+def test_desktop_extended_settings_read_local_status(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    plugin_dir = config_dir / "plugins" / "cache" / "example-plugin"
+    (plugin_dir / "skills" / "demo").mkdir(parents=True)
+    (plugin_dir / "skills" / "demo" / "SKILL.md").write_text(
+        "name: demo\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "plugin.json").write_text('{"name":"example-plugin"}\n', encoding="utf-8")
+    trace_dir = config_dir / "traces"
+    trace_dir.mkdir(parents=True)
+    (trace_dir / "run.jsonl").write_text('{"event":"ok"}\n', encoding="utf-8")
+    config = RuntimeConfig(
+        config_file=config_dir / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+    app.sessions.save(
+        "usage-session",
+        [
+            Message(role="user", content="hello"),
+            Message(role="assistant", content="world response"),
+        ],
+    )
+
+    state = app.state()
+
+    plugins = state["pluginsSettings"]
+    assert plugins["ok"] is True
+    assert plugins["total"] == 1
+    assert plugins["withSkills"] == 1
+    assert plugins["plugins"][0]["name"] == "example-plugin"
+    assert str(Path.home() / ".codex") not in json.dumps(plugins)
+
+    computer_use = state["computerUseSettings"]
+    assert computer_use["ok"] is True
+    assert computer_use["total"] == 3
+    assert {item["name"] for item in computer_use["capabilities"]} == {
+        "屏幕截图",
+        "桌面自动化",
+        "浏览器控制",
+    }
+
+    token_usage = state["tokenUsageSettings"]
+    assert token_usage["sessionCount"] == 1
+    assert token_usage["messageCount"] == 2
+    assert token_usage["estimatedTokens"] > 0
+    assert token_usage["items"][0]["id"] == "usage-session"
+
+    trace = state["traceSettings"]
+    assert trace["enabled"] is True
+    assert trace["exists"] is True
+    assert trace["total"] == 1
+    assert trace["files"][0]["relativePath"] == "run.jsonl"
+
+    diagnostics = state["diagnosticsSettings"]
+    assert diagnostics["checks"]
+    assert {item["name"] for item in diagnostics["checks"]}.issuperset(
+        {"工作目录", "配置文件", "会话目录", "MCP 配置", "Skills 索引", "插件索引"}
+    )
 
 
 def test_desktop_memory_settings_read_local_memory_summaries(tmp_path: Path) -> None:
