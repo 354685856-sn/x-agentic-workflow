@@ -128,7 +128,7 @@ class Agent:
         return self.provider
 
     def _system_prompt(self, user_text: str) -> str:
-        parts = [BASE_SYSTEM_PROMPT, role_prompt()]
+        parts = [BASE_SYSTEM_PROMPT, role_prompt(), self._desktop_preferences_prompt()]
         mcp_summary = self.mcp.context_summary()
         skill_prompt = self.skills.matching_prompt(user_text)
         if mcp_summary:
@@ -136,3 +136,39 @@ class Agent:
         if skill_prompt:
             parts.append(skill_prompt)
         return "\n\n".join(parts)
+
+    def _desktop_preferences_prompt(self) -> str:
+        lines: list[str] = []
+        reply_language = self.config.desktop_reply_language
+        if reply_language != "default":
+            language_labels = {
+                "en": "English",
+                "zh-CN": "Simplified Chinese",
+                "zh-TW": "Traditional Chinese",
+                "ja": "Japanese",
+                "ko": "Korean",
+            }
+            lines.append(f"Reply language preference: {language_labels[reply_language]}.")
+        style_prompts = {
+            "concise": "Use concise answers and keep progress reports brief.",
+            "explanatory": "Include more context and explain the reasoning behind changes.",
+            "review": (
+                "Use a review-oriented style: call out risks, regressions, "
+                "and verification gaps."
+            ),
+        }
+        if self.config.desktop_output_style in style_prompts:
+            lines.append(style_prompts[self.config.desktop_output_style])
+        if not self.config.desktop_thinking_enabled:
+            lines.append("Do not request or rely on extended thinking modes for this session.")
+        if self.config.desktop_web_search_provider == "off":
+            lines.append(
+                "Web search is disabled by desktop settings unless the user explicitly asks."
+            )
+        elif self.config.desktop_web_search_provider != "auto":
+            lines.append(
+                f"Preferred web search provider: {self.config.desktop_web_search_provider}."
+            )
+        if not lines:
+            return ""
+        return "Desktop preferences:\n" + "\n".join(f"- {line}" for line in lines)

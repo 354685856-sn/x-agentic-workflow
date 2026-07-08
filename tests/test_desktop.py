@@ -78,6 +78,21 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "/api/skills" in html
     assert "/api/memory" in html
     assert "/api/memory/preview" in html
+    assert "/api/plugins" in html
+    assert "/api/computer-use" in html
+    assert "/api/token-usage" in html
+    assert "/api/trace" in html
+    assert "/api/diagnostics" in html
+    assert 'id="pluginsSettingsPanel"' in html
+    assert 'id="computerUseSettingsPanel"' in html
+    assert 'id="tokenUsageSettingsPanel"' in html
+    assert 'id="traceSettingsPanel"' in html
+    assert 'id="diagnosticsSettingsPanel"' in html
+    assert 'data-settings-view="plugins"' in html
+    assert 'data-settings-view="computerUse"' in html
+    assert 'data-settings-view="tokenUsage"' in html
+    assert 'data-settings-view="trace"' in html
+    assert 'data-settings-view="diagnostics"' in html
     assert 'data-settings-view="general"' in html
     assert 'data-settings-view="h5"' in html
     assert 'data-settings-view="terminal"' in html
@@ -96,6 +111,8 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert 'id="openMcpAddView"' in html
     assert 'id="saveMcpServer"' in html
     assert "/api/mcp/add" in html
+    assert "/api/mcp/toggle" in html
+    assert "/api/mcp/delete" in html
     assert "连接自定义 MCP" in html
     assert 'id="agentsSettingsPanel"' in html
     assert 'id="refreshAgentsSettings"' in html
@@ -113,6 +130,22 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert 'id="notificationsEnabled"' in html
     assert 'id="uiScale"' in html
     assert 'data-send-mode="enter"' in html
+    assert 'data-theme="pure"' in html
+    assert "body.theme-dark" in html
+    assert "applyTheme" in html
+    assert "markGeneralDirty" in html
+    assert 'id="replyLanguage"' in html
+    assert 'data-output-style="review"' in html
+    assert 'data-permission-mode="skip"' in html
+    assert 'id="thinkingEnabled"' in html
+    assert 'id="autoMemoryEnabled"' in html
+    assert 'id="traceEnabled"' in html
+    assert 'data-network-mode="manual"' in html
+    assert 'id="aiRequestTimeoutSeconds"' in html
+    assert 'id="webfetchPreflightSkip"' in html
+    assert 'data-web-search-provider="tavily"' in html
+    assert 'id="tavilyApiKeyEnv"' in html
+    assert 'data-data-dir-mode="portable"' in html
     assert "验证项目" in html
     assert "验证中..." in html
     assert "切换项目" in html
@@ -151,6 +184,10 @@ def test_desktop_html_contains_clean_room_app_shell() -> None:
     assert "providerPresetPills" in html
     assert "/api/provider/add" in html
     assert "/api/provider/select" in html
+    assert "/api/provider/update" in html
+    assert "/api/provider/delete" in html
+    assert "https://api.openai.com/v1" in html
+    assert "gpt-4.1" in html
     assert "providerSubmitting" in html
     assert "runProviderAction" in html
     assert "添加服务商" in html
@@ -801,6 +838,51 @@ def test_desktop_provider_profiles_add_and_select_without_secret_value(tmp_path:
     selected = app.select_provider_profile({"id": active["id"]})
     assert selected["providerSave"]["ok"] is True
 
+    updated = app.update_provider_profile(
+        {
+            "id": active["id"],
+            "displayName": "DeepSeek Local",
+            "provider": "anthropic",
+            "protocolLabel": "DeepSeek",
+            "model": "deepseek-v4-flash",
+            "baseUrl": "https://api.deepseek.com/anthropic",
+            "apiKeyEnv": "ANTHROPIC_AUTH_TOKEN",
+            "toolSearchEnabled": False,
+        }
+    )
+    assert updated["providerSave"]["ok"] is True
+    assert updated["model"] == "deepseek-v4-flash"
+    delete_active = app.delete_provider_profile({"id": active["id"]})
+    assert delete_active["providerSave"]["ok"] is False
+    assert "默认服务商不能删除" in delete_active["providerSave"]["message"]
+
+
+def test_desktop_provider_presets_include_openai_official_endpoint(tmp_path: Path) -> None:
+    config = RuntimeConfig(
+        config_file=tmp_path / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+
+    presets = app.state()["providerPresets"]
+    openai = next(preset for preset in presets if preset["id"] == "openai")
+
+    assert openai["displayName"] == "OpenAI"
+    assert openai["provider"] == "openai-compatible"
+    assert openai["baseUrl"] == "https://api.openai.com/v1"
+    assert openai["apiKeyEnv"] == "OPENAI_API_KEY"
+
+    added = app.add_provider_profile({"presetId": "openai"})
+
+    assert added["providerSave"]["ok"] is True
+    assert added["provider"] == "openai-compatible"
+    assert added["model"] == "gpt-4.1"
+    assert added["providerProfiles"][0]["displayName"] == "OpenAI"
+
 
 def test_desktop_add_mcp_server_writes_local_config(tmp_path: Path) -> None:
     config = RuntimeConfig(
@@ -830,6 +912,17 @@ def test_desktop_add_mcp_server_writes_local_config(tmp_path: Path) -> None:
     assert saved["mcpServers"]["chrome-devtools"]["args"] == ["chrome-devtools-mcp@latest"]
     assert saved["mcpServers"]["chrome-devtools"]["env"] == {"CHROME_TOKEN": ""}
 
+    disabled = app.toggle_mcp_server({"name": "chrome-devtools", "enabled": False})
+    saved_disabled = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
+    assert disabled["mcpSave"]["ok"] is True
+    assert saved_disabled["mcpServers"]["chrome-devtools"]["enabled"] is False
+    assert disabled["mcpSettings"]["servers"][0]["status"] == "Disabled"
+
+    deleted = app.delete_mcp_server({"name": "chrome-devtools"})
+    saved_deleted = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
+    assert deleted["mcpSave"]["ok"] is True
+    assert "chrome-devtools" not in saved_deleted["mcpServers"]
+
 
 def test_desktop_general_settings_are_validated_and_persisted(tmp_path: Path) -> None:
     config_file = tmp_path / "config.json"
@@ -845,25 +938,64 @@ def test_desktop_general_settings_are_validated_and_persisted(tmp_path: Path) ->
 
     state = app.save_general_settings(
         {
+            "theme": "classic",
+            "language": "zh-CN",
+            "replyLanguage": "zh-CN",
+            "outputStyle": "review",
+            "permissionMode": "ask",
+            "thinkingEnabled": False,
+            "autoMemoryEnabled": True,
+            "traceEnabled": False,
             "requireCommandApproval": False,
             "sendMode": "enter",
             "uiScale": 125,
             "notificationsEnabled": True,
+            "networkMode": "manual",
+            "manualProxy": "http://127.0.0.1:7890",
+            "aiRequestTimeoutSeconds": 900,
+            "webfetchPreflightSkip": False,
+            "webSearchProvider": "brave",
+            "tavilyApiKeyEnv": "TAVILY_API_KEY",
+            "braveApiKeyEnv": "BRAVE_SEARCH_API_KEY",
+            "dataDirMode": "portable",
+            "portableDataDir": str(tmp_path / "portable-data"),
         }
     )
 
     assert state["generalSave"]["ok"] is True
-    assert state["generalSettings"] == {
-        "requireCommandApproval": False,
-        "sendMode": "enter",
-        "uiScale": 125,
-        "notificationsEnabled": True,
-    }
+    assert state["generalSettings"]["theme"] == "classic"
+    assert state["generalSettings"]["language"] == "zh-CN"
+    assert state["generalSettings"]["replyLanguage"] == "zh-CN"
+    assert state["generalSettings"]["outputStyle"] == "review"
+    assert state["generalSettings"]["thinkingEnabled"] is False
+    assert state["generalSettings"]["autoMemoryEnabled"] is True
+    assert state["generalSettings"]["traceEnabled"] is False
+    assert state["generalSettings"]["requireCommandApproval"] is False
+    assert state["generalSettings"]["sendMode"] == "enter"
+    assert state["generalSettings"]["uiScale"] == 125
+    assert state["generalSettings"]["notificationsEnabled"] is True
+    assert state["generalSettings"]["networkMode"] == "manual"
+    assert state["generalSettings"]["manualProxy"] == "http://127.0.0.1:7890"
+    assert state["generalSettings"]["aiRequestTimeoutSeconds"] == 900
+    assert state["generalSettings"]["webfetchPreflightSkip"] is False
+    assert state["generalSettings"]["webSearchProvider"] == "brave"
+    assert state["generalSettings"]["dataDirMode"] == "portable"
     reloaded = RuntimeConfig.load(config_file=config_file, workdir=tmp_path)
+    assert reloaded.desktop_theme == "classic"
+    assert reloaded.desktop_reply_language == "zh-CN"
+    assert reloaded.desktop_output_style == "review"
+    assert reloaded.desktop_thinking_enabled is False
+    assert reloaded.desktop_auto_memory_enabled is True
+    assert reloaded.desktop_trace_enabled is False
     assert reloaded.require_command_approval is False
     assert reloaded.desktop_send_mode == "enter"
     assert reloaded.desktop_ui_scale == 125
     assert reloaded.desktop_notifications_enabled is True
+    assert reloaded.desktop_network_mode == "manual"
+    assert reloaded.desktop_manual_proxy == "http://127.0.0.1:7890"
+    assert reloaded.ai_request_timeout_seconds == 900
+    assert reloaded.desktop_web_search_provider == "brave"
+    assert reloaded.desktop_data_dir_mode == "portable"
 
 
 def test_desktop_general_settings_reject_invalid_payload(tmp_path: Path) -> None:
@@ -1072,13 +1204,16 @@ def test_desktop_agents_settings_reports_builtin_roles(tmp_path: Path) -> None:
     agents = app.state()["agentsSettings"]
 
     assert agents["ok"] is True
-    assert agents["mode"] == "系统提示注入"
-    assert agents["total"] == 3
-    assert agents["enabled"] == 3
+    assert agents["mode"] == "内置 Agent 索引"
+    assert agents["total"] == 6
+    assert agents["enabled"] == 6
     assert [role["name"] for role in agents["roles"]] == [
-        "architect",
-        "implementer",
-        "reviewer",
+        "general-purpose",
+        "statusline-setup",
+        "Explore",
+        "Plan",
+        "Implement",
+        "Review",
     ]
     assert all(role["status"] == "已生效" for role in agents["roles"])
 
@@ -1119,6 +1254,72 @@ def test_desktop_skills_settings_read_local_skill_summaries(tmp_path: Path) -> N
     assert skills["skills"][0]["description"] == "Review code changes for regressions."
     assert skills["skills"][0]["relativePath"] == "coding/review.md"
     assert "full body should not be returned" not in json.dumps(skills)
+
+
+def test_desktop_extended_settings_read_local_status(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    plugin_dir = config_dir / "plugins" / "cache" / "example-plugin"
+    (plugin_dir / "skills" / "demo").mkdir(parents=True)
+    (plugin_dir / "skills" / "demo" / "SKILL.md").write_text(
+        "name: demo\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "plugin.json").write_text('{"name":"example-plugin"}\n', encoding="utf-8")
+    trace_dir = config_dir / "traces"
+    trace_dir.mkdir(parents=True)
+    (trace_dir / "run.jsonl").write_text('{"event":"ok"}\n', encoding="utf-8")
+    config = RuntimeConfig(
+        config_file=config_dir / "config.json",
+        workdir=tmp_path,
+        sessions_dir=tmp_path / "sessions",
+        skills_dir=tmp_path / "skills",
+        hooks_dir=tmp_path / "hooks",
+        mcp_config_file=tmp_path / "mcp.json",
+    )
+    app = DesktopApp(config)
+    app.sessions.save(
+        "usage-session",
+        [
+            Message(role="user", content="hello"),
+            Message(role="assistant", content="world response"),
+        ],
+    )
+
+    state = app.state()
+
+    plugins = state["pluginsSettings"]
+    assert plugins["ok"] is True
+    assert plugins["total"] == 1
+    assert plugins["withSkills"] == 1
+    assert plugins["plugins"][0]["name"] == "example-plugin"
+    assert str(Path.home() / ".codex") not in json.dumps(plugins)
+
+    computer_use = state["computerUseSettings"]
+    assert computer_use["ok"] is True
+    assert computer_use["total"] == 3
+    assert {item["name"] for item in computer_use["capabilities"]} == {
+        "屏幕截图",
+        "桌面自动化",
+        "浏览器控制",
+    }
+
+    token_usage = state["tokenUsageSettings"]
+    assert token_usage["sessionCount"] == 1
+    assert token_usage["messageCount"] == 2
+    assert token_usage["estimatedTokens"] > 0
+    assert token_usage["items"][0]["id"] == "usage-session"
+
+    trace = state["traceSettings"]
+    assert trace["enabled"] is True
+    assert trace["exists"] is True
+    assert trace["total"] == 1
+    assert trace["files"][0]["relativePath"] == "run.jsonl"
+
+    diagnostics = state["diagnosticsSettings"]
+    assert diagnostics["checks"]
+    assert {item["name"] for item in diagnostics["checks"]}.issuperset(
+        {"工作目录", "配置文件", "会话目录", "MCP 配置", "Skills 索引", "插件索引"}
+    )
 
 
 def test_desktop_memory_settings_read_local_memory_summaries(tmp_path: Path) -> None:

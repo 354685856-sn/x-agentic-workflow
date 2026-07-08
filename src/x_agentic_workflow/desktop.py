@@ -6,8 +6,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
+import sys
 import threading
 import webbrowser
 from datetime import datetime, timedelta, timezone
@@ -20,9 +22,8 @@ from urllib.parse import parse_qs, urlparse
 from .agent import Agent
 from .config import ProviderConfig, RuntimeConfig
 from .mcp import McpRegistry
-from .multi_agent import DEFAULT_ROLES
 from .sessions import SessionStore
-from .skills import SkillRegistry
+from .skills import Skill, SkillRegistry
 from .tools import tool_specs
 from .types import AgentEvent, Message
 
@@ -38,8 +39,59 @@ SCHEDULER_INTERVAL_SECONDS = 30
 MEMORY_PREVIEW_CHARS = 12_000
 MEMORY_SCAN_LIMIT = 120
 COMMAND_TIMEOUT_SECONDS = 120
+SETTINGS_LIST_LIMIT = 80
+
+BUILTIN_AGENT_SETTINGS: list[dict[str, str]] = [
+    {
+        "name": "general-purpose",
+        "instructions": "General-purpose agent for research, code search, and multi-step execution when the task needs broad context.",
+        "model": "INHERIT",
+        "tools": "1 个工具",
+    },
+    {
+        "name": "statusline-setup",
+        "instructions": "Configure local status line behavior and desktop session display settings.",
+        "model": "SONNET",
+        "tools": "2 个工具",
+    },
+    {
+        "name": "Explore",
+        "instructions": "Fast codebase exploration for file discovery, keyword search, and lightweight repository questions.",
+        "model": "HAIKU",
+        "tools": "未限制工具",
+    },
+    {
+        "name": "Plan",
+        "instructions": "Create an implementation plan, identify risks, and break work into reviewable steps before execution.",
+        "model": "INHERIT",
+        "tools": "未限制工具",
+    },
+    {
+        "name": "Implement",
+        "instructions": "Apply scoped code changes following the selected plan and local project patterns.",
+        "model": "SONNET",
+        "tools": "未限制工具",
+    },
+    {
+        "name": "Review",
+        "instructions": "Review changes for regressions, missing tests, UI mismatches, and release readiness.",
+        "model": "SONNET",
+        "tools": "未限制工具",
+    },
+]
 
 PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
+    "openai": {
+        "displayName": "OpenAI",
+        "provider": "openai-compatible",
+        "protocolLabel": "OpenAI",
+        "model": "gpt-4.1",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "authLabel": "Bearer Token (OPENAI_API_KEY)",
+        "note": "OpenAI 官方 Chat Completions 兼容端点。",
+        "toolSearchEnabled": True,
+    },
     "deepseek": {
         "displayName": "DeepSeek",
         "provider": "anthropic",
@@ -252,11 +304,40 @@ class DesktopApp:
             "agentsSettings": self._agents_settings_state(),
             "skillsSettings": self._skills_settings_state(),
             "memorySettings": self._memory_settings_state(),
+            "pluginsSettings": self._plugins_settings_state(),
+            "computerUseSettings": self._computer_use_settings_state(),
+            "tokenUsageSettings": self._token_usage_settings_state(),
+            "traceSettings": self._trace_settings_state(),
+            "diagnosticsSettings": self._diagnostics_settings_state(),
             "generalSettings": {
+                "theme": self.config.desktop_theme,
+                "language": self.config.desktop_language,
+                "replyLanguage": self.config.desktop_reply_language,
+                "outputStyle": self.config.desktop_output_style,
+                "permissionMode": self.config.desktop_permission_mode,
+                "thinkingEnabled": self.config.desktop_thinking_enabled,
+                "autoMemoryEnabled": self.config.desktop_auto_memory_enabled,
+                "traceEnabled": self.config.desktop_trace_enabled,
                 "requireCommandApproval": self.config.require_command_approval,
                 "sendMode": self.config.desktop_send_mode,
                 "uiScale": self.config.desktop_ui_scale,
                 "notificationsEnabled": self.config.desktop_notifications_enabled,
+                "networkMode": self.config.desktop_network_mode,
+                "manualProxy": self.config.desktop_manual_proxy,
+                "aiRequestTimeoutSeconds": self.config.ai_request_timeout_seconds,
+                "webfetchPreflightSkip": self.config.desktop_webfetch_preflight_skip,
+                "webSearchProvider": self.config.desktop_web_search_provider,
+                "tavilyApiKeyEnv": self.config.desktop_tavily_api_key_env,
+                "tavilyApiKeyPresent": bool(os.environ.get(self.config.desktop_tavily_api_key_env, "").strip()),
+                "braveApiKeyEnv": self.config.desktop_brave_api_key_env,
+                "braveApiKeyPresent": bool(os.environ.get(self.config.desktop_brave_api_key_env, "").strip()),
+                "dataDirMode": self.config.desktop_data_dir_mode,
+                "portableDataDir": self.config.desktop_portable_data_dir,
+                "actualDataDir": str(self.config.config_file.parent),
+                "configFile": str(self.config.config_file),
+                "sessionsDir": str(self.config.sessions_dir),
+                "skillsDir": str(self.config.skills_dir),
+                "mcpConfigFile": str(self.config.mcp_config_file),
             },
         }
 
@@ -397,6 +478,59 @@ class DesktopApp:
             }
         return {**self.state(), "providerSave": {"ok": False, "message": "未找到这个服务商。"}}
 
+    def update_provider_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        profile_id = str(payload.get("id", "")).strip()
+        if not profile_id:
+            return {**self.state(), "providerSave": {"ok": False, "message": "服务商 ID 不能为空。"}}
+        profiles = self._stored_provider_profiles()
+        old_profile = next((profile for profile in profiles if profile["id"] == profile_id), None)
+        if old_profile is None:
+            return {**self.state(), "providerSave": {"ok": False, "message": "未找到这个服务商。"}}
+        try:
+            profile = self._profile_from_payload(payload)
+        except ValueError as exc:
+            return {**self.state(), "providerSave": {"ok": False, "message": str(exc)}}
+        was_active = self._active_provider_id() == profile_id
+        profile["id"] = profile_id
+        normalized_profiles = [
+            profile if existing["id"] == profile_id else existing
+            for existing in profiles
+            if not str(existing["id"]).startswith("preset:")
+        ]
+        self.config.provider_profiles = normalized_profiles[:12]
+        if was_active:
+            self.config.provider.name = cast(Any, profile["provider"])
+            self.config.provider.model = str(profile["model"])
+            self.config.provider.base_url = cast(str | None, profile.get("baseUrl") or None)
+            self.config.provider.api_key_env = str(profile["apiKeyEnv"])
+            self.agent = self._new_agent(session_id=self.agent.session_id)
+        self.config.save()
+        return {
+            **self.state(),
+            "providerSave": {"ok": True, "message": f"已更新服务商：{profile['displayName']}。"},
+        }
+
+    def delete_provider_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        profile_id = str(payload.get("id", "")).strip()
+        if not profile_id:
+            return {**self.state(), "providerSave": {"ok": False, "message": "服务商 ID 不能为空。"}}
+        if profile_id == self._active_provider_id():
+            return {
+                **self.state(),
+                "providerSave": {"ok": False, "message": "默认服务商不能删除，请先切换默认服务商。"},
+            }
+        stored_profiles = self._stored_provider_profiles()
+        if not any(profile["id"] == profile_id for profile in stored_profiles):
+            return {**self.state(), "providerSave": {"ok": False, "message": "未找到这个服务商。"}}
+        profiles = [
+            profile
+            for profile in stored_profiles
+            if profile["id"] != profile_id and not str(profile["id"]).startswith("preset:")
+        ]
+        self.config.provider_profiles = profiles[:12]
+        self.config.save()
+        return {**self.state(), "providerSave": {"ok": True, "message": "已删除服务商。"}}
+
     def _provider_presets_state(self) -> list[dict[str, Any]]:
         return [
             {"id": preset_id, **preset}
@@ -529,10 +663,24 @@ class DesktopApp:
         self.config.provider_profiles = profiles[:12]
 
     def _active_provider_id(self) -> str:
+        for raw_profile in self.config.provider_profiles:
+            if not isinstance(raw_profile, dict):
+                continue
+            profile = self._normalize_provider_profile(raw_profile)
+            if self._profile_matches_active_provider(profile):
+                return str(profile["id"])
         return _provider_profile_id(
             self._active_provider_display_name(),
             self.config.provider.base_url,
             self.config.provider.model,
+        )
+
+    def _profile_matches_active_provider(self, profile: dict[str, Any]) -> bool:
+        return (
+            profile.get("provider") == self.config.provider.name
+            and profile.get("model") == self.config.provider.model
+            and (profile.get("baseUrl") or None) == self.config.provider.base_url
+            and profile.get("apiKeyEnv") == self.config.provider.api_key_env
         )
 
     def _active_provider_display_name(self) -> str:
@@ -546,15 +694,54 @@ class DesktopApp:
         return "Anthropic" if self.config.provider.name == "anthropic" else "OpenAI-compatible"
 
     def save_general_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        approval = payload.get("requireCommandApproval")
-        notifications = payload.get("notificationsEnabled")
+        approval = payload.get("requireCommandApproval", self.config.require_command_approval)
+        notifications = payload.get(
+            "notificationsEnabled",
+            self.config.desktop_notifications_enabled,
+        )
         send_mode = payload.get("sendMode")
         ui_scale = payload.get("uiScale")
-        if not isinstance(approval, bool) or not isinstance(notifications, bool):
+        theme = payload.get("theme", self.config.desktop_theme)
+        language = payload.get("language", self.config.desktop_language)
+        reply_language = payload.get("replyLanguage", self.config.desktop_reply_language)
+        output_style = payload.get("outputStyle", self.config.desktop_output_style)
+        permission_mode = payload.get("permissionMode", self.config.desktop_permission_mode)
+        thinking = payload.get("thinkingEnabled", self.config.desktop_thinking_enabled)
+        auto_memory = payload.get("autoMemoryEnabled", self.config.desktop_auto_memory_enabled)
+        trace = payload.get("traceEnabled", self.config.desktop_trace_enabled)
+        network_mode = payload.get("networkMode", self.config.desktop_network_mode)
+        manual_proxy = str(payload.get("manualProxy", self.config.desktop_manual_proxy)).strip()
+        timeout = payload.get("aiRequestTimeoutSeconds", self.config.ai_request_timeout_seconds)
+        webfetch_skip = payload.get(
+            "webfetchPreflightSkip",
+            self.config.desktop_webfetch_preflight_skip,
+        )
+        web_search_provider = payload.get(
+            "webSearchProvider",
+            self.config.desktop_web_search_provider,
+        )
+        tavily_env = str(payload.get("tavilyApiKeyEnv", self.config.desktop_tavily_api_key_env)).strip()
+        brave_env = str(payload.get("braveApiKeyEnv", self.config.desktop_brave_api_key_env)).strip()
+        data_dir_mode = payload.get("dataDirMode", self.config.desktop_data_dir_mode)
+        portable_data_dir = str(
+            payload.get("portableDataDir", self.config.desktop_portable_data_dir)
+        ).strip()
+        boolean_values = [approval, notifications, thinking, auto_memory, trace, webfetch_skip]
+        if any(not isinstance(value, bool) for value in boolean_values):
             return {
                 **self.state(),
                 "generalSave": {"ok": False, "message": "开关设置格式无效。"},
             }
+        if theme not in {"pure", "classic", "dark"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "配色主题无效。"}}
+        if language not in {"en", "zh-CN", "zh-TW", "ja", "ko"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "显示语言无效。"}}
+        if reply_language not in {"default", "en", "zh-CN", "zh-TW", "ja", "ko"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "回复语言无效。"}}
+        if output_style not in {"default", "concise", "explanatory", "review"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "输出风格无效。"}}
+        if permission_mode not in {"ask", "skip"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "默认会话权限模式无效。"}}
         if send_mode not in {"enter", "modifier-enter"}:
             return {
                 **self.state(),
@@ -565,10 +752,53 @@ class DesktopApp:
                 **self.state(),
                 "generalSave": {"ok": False, "message": "界面缩放必须在 50% 到 200% 之间。"},
             }
-        self.config.require_command_approval = approval
+        if network_mode not in {"direct", "system", "manual"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "网络代理模式无效。"}}
+        if network_mode == "manual" and not _looks_like_proxy_url(manual_proxy):
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "手动代理必须填写 http:// 或 https:// 地址。"},
+            }
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 30 <= timeout <= 1800:
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "AI 请求超时必须在 30 到 1800 秒之间。"},
+            }
+        if web_search_provider not in {"auto", "tavily", "brave", "provider", "off"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "WebSearch 模式无效。"}}
+        if not _looks_like_env_name(tavily_env) or not _looks_like_env_name(brave_env):
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "搜索 API Key 环境变量名格式无效。"},
+            }
+        if data_dir_mode not in {"system", "portable"}:
+            return {**self.state(), "generalSave": {"ok": False, "message": "数据存储位置无效。"}}
+        if data_dir_mode == "portable" and not portable_data_dir:
+            return {
+                **self.state(),
+                "generalSave": {"ok": False, "message": "使用便携目录时必须填写目录路径。"},
+            }
+        self.config.desktop_theme = cast(Any, theme)
+        self.config.desktop_language = cast(Any, language)
+        self.config.desktop_reply_language = cast(Any, reply_language)
+        self.config.desktop_output_style = cast(Any, output_style)
+        self.config.desktop_permission_mode = cast(Any, permission_mode)
+        self.config.desktop_thinking_enabled = bool(thinking)
+        self.config.desktop_auto_memory_enabled = bool(auto_memory)
+        self.config.desktop_trace_enabled = bool(trace)
+        self.config.require_command_approval = permission_mode != "skip" and bool(approval)
         self.config.desktop_send_mode = send_mode
         self.config.desktop_ui_scale = ui_scale
-        self.config.desktop_notifications_enabled = notifications
+        self.config.desktop_notifications_enabled = bool(notifications)
+        self.config.desktop_network_mode = cast(Any, network_mode)
+        self.config.desktop_manual_proxy = manual_proxy if network_mode == "manual" else ""
+        self.config.ai_request_timeout_seconds = timeout
+        self.config.desktop_webfetch_preflight_skip = bool(webfetch_skip)
+        self.config.desktop_web_search_provider = cast(Any, web_search_provider)
+        self.config.desktop_tavily_api_key_env = tavily_env
+        self.config.desktop_brave_api_key_env = brave_env
+        self.config.desktop_data_dir_mode = cast(Any, data_dir_mode)
+        self.config.desktop_portable_data_dir = portable_data_dir
         self.config.save()
         self.agent = self._new_agent(session_id=self.agent.session_id)
         return {
@@ -1197,10 +1427,13 @@ class DesktopApp:
                 "transport": server.transport,
                 "url": server.url,
                 "envKeys": server.env_keys or [],
+                "enabled": server.enabled,
+                "status": _mcp_server_status(server.enabled, server.command, server.url),
             }
             for server in servers
         ]
         remote = sum(1 for server in servers if server.url)
+        enabled = sum(1 for server in servers if server.enabled)
         return {
             "configFile": str(self.config.mcp_config_file),
             "exists": self.config.mcp_config_file.exists(),
@@ -1208,6 +1441,8 @@ class DesktopApp:
             "error": "",
             "servers": items,
             "total": len(items),
+            "enabled": enabled,
+            "needsAttention": sum(1 for item in items if item["status"] != "Configured"),
             "stdio": len(items) - remote,
             "remote": remote,
         }
@@ -1265,19 +1500,69 @@ class DesktopApp:
             "mcpAdd": {"ok": True, "message": f"已写入 MCP 服务：{name}。"},
         }
 
+    def toggle_mcp_server(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name", "")).strip()
+        enabled = payload.get("enabled")
+        if not name or not isinstance(enabled, bool):
+            return {**self.state(), "mcpSave": {"ok": False, "message": "MCP 服务名称或状态无效。"}}
+        try:
+            data, servers = self._read_mcp_config_map()
+            if name not in servers or not isinstance(servers[name], dict):
+                return {**self.state(), "mcpSave": {"ok": False, "message": "未找到这个 MCP 服务。"}}
+            servers[name]["enabled"] = enabled
+            data["mcpServers"] = servers
+            self._write_mcp_config(data)
+        except (OSError, TypeError, json.JSONDecodeError) as exc:
+            return {**self.state(), "mcpSave": {"ok": False, "message": str(exc)}}
+        label = "启用" if enabled else "禁用"
+        return {**self.state(), "mcpSave": {"ok": True, "message": f"已{label} MCP 服务：{name}。"}}
+
+    def delete_mcp_server(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            return {**self.state(), "mcpSave": {"ok": False, "message": "MCP 服务名称不能为空。"}}
+        try:
+            data, servers = self._read_mcp_config_map()
+            if name not in servers:
+                return {**self.state(), "mcpSave": {"ok": False, "message": "未找到这个 MCP 服务。"}}
+            del servers[name]
+            data["mcpServers"] = servers
+            self._write_mcp_config(data)
+        except (OSError, TypeError, json.JSONDecodeError) as exc:
+            return {**self.state(), "mcpSave": {"ok": False, "message": str(exc)}}
+        return {**self.state(), "mcpSave": {"ok": True, "message": f"已删除 MCP 服务：{name}。"}}
+
+    def _read_mcp_config_map(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        data: dict[str, Any] = {}
+        if self.config.mcp_config_file.exists():
+            data = json.loads(self.config.mcp_config_file.read_text(encoding="utf-8"))
+        raw_servers = data.get("mcpServers")
+        if not isinstance(raw_servers, dict):
+            raw_servers = data.get("servers")
+        if not isinstance(raw_servers, dict):
+            raw_servers = {}
+        return data, raw_servers
+
+    def _write_mcp_config(self, data: dict[str, Any]) -> None:
+        self.config.mcp_config_file.parent.mkdir(parents=True, exist_ok=True)
+        self.config.mcp_config_file.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
     def _agents_settings_state(self) -> dict[str, Any]:
         roles = [
             {
-                "name": role.name,
-                "instructions": role.instructions,
+                "name": role["name"],
+                "instructions": role["instructions"],
                 "source": "内置",
                 "status": "已生效",
-                "model": "继承默认模型",
-                "tools": "继承当前工具集",
+                "model": role["model"],
+                "tools": role["tools"],
             }
-            for role in DEFAULT_ROLES
+            for role in BUILTIN_AGENT_SETTINGS
         ]
-        prompt_chars = len("\n".join(f"{role.name}: {role.instructions}" for role in DEFAULT_ROLES))
+        prompt_chars = len("\n".join(f"{role['name']}: {role['instructions']}" for role in BUILTIN_AGENT_SETTINGS))
         return {
             "ok": True,
             "error": "",
@@ -1286,18 +1571,351 @@ class DesktopApp:
             "enabled": len(roles),
             "sources": 1 if roles else 0,
             "promptChars": prompt_chars,
-            "mode": "系统提示注入",
+            "mode": "内置 Agent 索引",
+        }
+
+    def _plugins_settings_state(self) -> dict[str, Any]:
+        default_config_file = Path.home() / ".x-agentic-workflow" / "config.json"
+        if self.config.config_file == default_config_file:
+            claude_plugins = self._claude_installed_plugins_settings_state()
+            if claude_plugins["plugins"]:
+                return claude_plugins
+        roots = self._plugin_source_roots()
+        plugins: list[dict[str, Any]] = []
+        seen: set[Path] = set()
+        errors: list[str] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            try:
+                candidates = [path for path in root.iterdir() if path.is_dir()]
+            except OSError as exc:
+                errors.append(f"{root}: {exc}")
+                continue
+            for candidate in sorted(candidates, key=lambda path: path.name.lower())[:SETTINGS_LIST_LIMIT]:
+                try:
+                    resolved = candidate.resolve()
+                except OSError:
+                    resolved = candidate
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                skill_count = self._count_skill_dirs(candidate)
+                mcp_count = len(list(candidate.rglob("mcp.json"))) + len(list(candidate.rglob("server.json")))
+                manifest = next(
+                    (
+                        path
+                        for path in [
+                            candidate / "plugin.json",
+                            candidate / "package.json",
+                            candidate / "manifest.json",
+                        ]
+                        if path.exists()
+                    ),
+                    None,
+                )
+                plugins.append(
+                    {
+                        "name": candidate.name,
+                        "path": str(candidate),
+                        "root": str(root),
+                        "source": "Codex 插件缓存" if "cache" in root.parts else "Codex 插件",
+                        "skillCount": skill_count,
+                        "mcpCount": mcp_count,
+                        "agentCount": len(list((candidate / "agents").glob("*.md"))) if (candidate / "agents").exists() else 0,
+                        "commandCount": len(list((candidate / "commands").rglob("*.md"))) if (candidate / "commands").exists() else 0,
+                        "hookCount": len(list((candidate / "hooks").rglob("*"))) if (candidate / "hooks").exists() else 0,
+                        "manifest": str(manifest) if manifest else "",
+                        "version": "",
+                        "installedAt": "",
+                    }
+                )
+        return {
+            "ok": not errors,
+            "error": "; ".join(errors),
+            "roots": [str(root) for root in roots],
+            "plugins": plugins,
+            "total": len(plugins),
+            "withSkills": sum(1 for item in plugins if int(item["skillCount"]) > 0),
+            "withMcp": sum(1 for item in plugins if int(item["mcpCount"]) > 0),
+        }
+
+    def _claude_installed_plugins_settings_state(self) -> dict[str, Any]:
+        installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+        plugins: list[dict[str, Any]] = []
+        errors: list[str] = []
+        if not installed_file.exists():
+            return {
+                "ok": True,
+                "error": "",
+                "roots": [],
+                "plugins": [],
+                "total": 0,
+                "withSkills": 0,
+                "withMcp": 0,
+            }
+        try:
+            data = json.loads(installed_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "roots": [str(installed_file)],
+                "plugins": [],
+                "total": 0,
+                "withSkills": 0,
+                "withMcp": 0,
+            }
+        raw_plugins = data.get("plugins", {})
+        if not isinstance(raw_plugins, dict):
+            raw_plugins = {}
+        for plugin_name, installs in sorted(raw_plugins.items(), key=lambda item: str(item[0]).lower()):
+            if not isinstance(installs, list):
+                continue
+            for install in installs:
+                if not isinstance(install, dict):
+                    continue
+                install_path = Path(str(install.get("installPath", ""))).expanduser()
+                if not install_path.exists():
+                    errors.append(f"{plugin_name}: 安装目录不存在")
+                skills_root = install_path / "skills"
+                mcp_count = len(list(install_path.rglob("mcp.json"))) + len(list(install_path.rglob("server.json")))
+                manifest = next(
+                    (
+                        path
+                        for path in [
+                            install_path / "plugin.json",
+                            install_path / "package.json",
+                            install_path / "manifest.json",
+                        ]
+                        if path.exists()
+                    ),
+                    None,
+                )
+                plugins.append(
+                    {
+                        "name": str(plugin_name),
+                        "path": str(install_path),
+                        "root": str(installed_file.parent),
+                        "source": "Claude 插件",
+                        "skillCount": self._count_skill_dirs(skills_root),
+                        "mcpCount": mcp_count,
+                        "agentCount": len(list((install_path / "agents").glob("*.md"))) if (install_path / "agents").exists() else 0,
+                        "commandCount": len(list((install_path / "commands").rglob("*.md"))) if (install_path / "commands").exists() else 0,
+                        "hookCount": len(list((install_path / "hooks").rglob("*"))) if (install_path / "hooks").exists() else 0,
+                        "manifest": str(manifest) if manifest else "",
+                        "version": str(install.get("version", "")),
+                        "installedAt": str(install.get("installedAt", "")),
+                    }
+                )
+        return {
+            "ok": not errors,
+            "error": "; ".join(errors),
+            "roots": [str(installed_file)],
+            "plugins": plugins,
+            "total": len(plugins),
+            "withSkills": sum(1 for item in plugins if int(item["skillCount"]) > 0),
+            "withMcp": sum(1 for item in plugins if int(item["mcpCount"]) > 0),
+        }
+
+    def _count_skill_dirs(self, root: Path) -> int:
+        if not root.exists():
+            return 0
+        return len({path.parent for path in root.rglob("SKILL.md")} | {path.parent for path in root.rglob("skill.md")})
+
+    def _plugin_source_roots(self) -> list[Path]:
+        default_config_file = Path.home() / ".x-agentic-workflow" / "config.json"
+        if self.config.config_file != default_config_file:
+            return [
+                self.config.config_file.parent / "plugins" / "cache",
+                self.config.config_file.parent / "plugins" / "installed",
+            ]
+        return [
+            Path.home() / ".codex" / "plugins" / "cache",
+            Path.home() / ".codex" / "plugins" / "installed",
+        ]
+
+    def _computer_use_settings_state(self) -> dict[str, Any]:
+        platform = "macOS" if sys.platform == "darwin" else os.name
+        screenshot_command = shutil.which("screencapture")
+        automation_command = shutil.which("osascript")
+        browser_command = shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chrome")
+        capabilities = [
+            {
+                "name": "屏幕截图",
+                "status": "可用" if screenshot_command else "未检测到",
+                "detail": screenshot_command or "macOS screencapture 不在 PATH 中。",
+            },
+            {
+                "name": "桌面自动化",
+                "status": "可用" if automation_command else "未检测到",
+                "detail": automation_command or "需要系统自动化授权后才能控制应用。",
+            },
+            {
+                "name": "浏览器控制",
+                "status": "可选" if browser_command else "未检测到",
+                "detail": browser_command or "可通过浏览器调试端口或 Playwright 增强。",
+            },
+        ]
+        available = sum(1 for item in capabilities if item["status"] in {"可用", "可选"})
+        return {
+            "ok": True,
+            "platform": platform,
+            "enabled": False,
+            "available": available,
+            "total": len(capabilities),
+            "permission": "需要逐次授权",
+            "capabilities": capabilities,
+            "note": "当前桌面端只展示本机能力检查；实际控制会继续走命令审批和系统权限。",
+        }
+
+    def _token_usage_settings_state(self) -> dict[str, Any]:
+        sessions = self.sessions.list_sessions()
+        items: list[dict[str, Any]] = []
+        total_messages = 0
+        total_chars = 0
+        for session_id in sessions[-SETTINGS_LIST_LIMIT:]:
+            payload = self.sessions.load_payload(session_id)
+            messages = payload.get("messages", [])
+            if not isinstance(messages, list):
+                messages = []
+            chars = sum(len(str(message.get("content", ""))) for message in messages if isinstance(message, dict))
+            total_messages += len(messages)
+            total_chars += chars
+            summary = self.sessions.session_summary(session_id)
+            items.append(
+                {
+                    "id": session_id,
+                    "title": summary.get("title", session_id),
+                    "updatedLabel": summary.get("updatedLabel", ""),
+                    "messages": len(messages),
+                    "estimatedTokens": max(0, round(chars / 4)),
+                }
+            )
+        items.sort(key=lambda item: str(item["updatedLabel"]), reverse=True)
+        return {
+            "ok": True,
+            "sessionCount": len(sessions),
+            "sampledSessions": len(items),
+            "messageCount": total_messages,
+            "estimatedTokens": max(0, round(total_chars / 4)),
+            "maxTokens": self.config.max_tokens,
+            "items": items[:20],
+            "note": "当前为本机会话文本估算，不包含服务商账单口径。",
+        }
+
+    def _trace_settings_state(self) -> dict[str, Any]:
+        trace_dir = self.config.config_file.parent / "traces"
+        files: list[dict[str, Any]] = []
+        total_size = 0
+        if trace_dir.exists():
+            candidates: list[tuple[float, Path]] = []
+            for path in trace_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                candidates.append((stat.st_mtime, path))
+            for _, path in sorted(candidates, reverse=True)[:SETTINGS_LIST_LIMIT]:
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                total_size += stat.st_size
+                files.append(
+                    {
+                        "name": path.name,
+                        "path": str(path),
+                        "relativePath": str(path.relative_to(trace_dir)),
+                        "sizeBytes": stat.st_size,
+                        "updated": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    }
+                )
+        return {
+            "ok": True,
+            "enabled": self.config.desktop_trace_enabled,
+            "dir": str(trace_dir),
+            "exists": trace_dir.exists(),
+            "total": len(files),
+            "sizeBytes": total_size,
+            "files": files[:20],
+        }
+
+    def _diagnostics_settings_state(self) -> dict[str, Any]:
+        mcp = self._mcp_settings_state()
+        skills = self._skills_settings_state()
+        plugins = self._plugins_settings_state()
+        checks = [
+            {
+                "name": "工作目录",
+                "status": "pass" if self.config.workdir.exists() else "fail",
+                "detail": str(self.config.workdir),
+            },
+            {
+                "name": "配置文件",
+                "status": "pass" if self.config.config_file.exists() else "warn",
+                "detail": str(self.config.config_file),
+            },
+            {
+                "name": "会话目录",
+                "status": "pass" if os.access(self.config.sessions_dir.parent, os.W_OK) else "fail",
+                "detail": str(self.config.sessions_dir),
+            },
+            {
+                "name": "服务商密钥",
+                "status": "pass" if self.config.api_key else "warn",
+                "detail": self.config.provider.api_key_env,
+            },
+            {
+                "name": "MCP 配置",
+                "status": "pass" if mcp.get("ok") else "fail",
+                "detail": f"{mcp.get('total', 0)} 个服务",
+            },
+            {
+                "name": "Skills 索引",
+                "status": "pass" if skills.get("ok") else "fail",
+                "detail": f"{skills.get('total', 0)} 个技能",
+            },
+            {
+                "name": "插件索引",
+                "status": "pass" if plugins.get("ok") else "warn",
+                "detail": f"{plugins.get('total', 0)} 个插件",
+            },
+        ]
+        return {
+            "ok": all(item["status"] != "fail" for item in checks),
+            "checks": checks,
+            "pass": sum(1 for item in checks if item["status"] == "pass"),
+            "warn": sum(1 for item in checks if item["status"] == "warn"),
+            "fail": sum(1 for item in checks if item["status"] == "fail"),
+            "workdir": str(self.config.workdir),
         }
 
     def _skills_settings_state(self) -> dict[str, Any]:
-        registry = SkillRegistry(self.config.skills_dir)
-        try:
-            skills = registry.discover()
-        except OSError as exc:
+        source_roots = self._skill_source_roots()
+        skills: list[Skill] = []
+        errors: list[str] = []
+        for source, root in source_roots:
+            try:
+                if source == "user" and root == Path.home() / ".claude" / "skills":
+                    skills.extend(self._discover_top_level_skills(root, source=source))
+                else:
+                    registry = SkillRegistry(
+                        root,
+                        source=source,
+                        create=source == "project",
+                        include_loose_markdown=source == "project",
+                    )
+                    skills.extend(registry.discover())
+            except OSError as exc:
+                errors.append(f"{root}: {exc}")
+        if errors and not skills:
             return {
                 "skillsDir": str(self.config.skills_dir),
                 "ok": False,
-                "error": str(exc),
+                "error": "; ".join(errors),
                 "skills": [],
                 "total": 0,
                 "withDescription": 0,
@@ -1308,6 +1926,7 @@ class DesktopApp:
         estimated_chars = 0
         sources: set[str] = set()
         for skill in skills:
+            root = skill.root or self.config.skills_dir
             try:
                 stat = skill.path.stat()
                 size = stat.st_size
@@ -1315,31 +1934,140 @@ class DesktopApp:
             except OSError:
                 size = 0
                 updated = ""
-            relative_path = str(skill.path.relative_to(self.config.skills_dir))
-            source = relative_path.split("/", 1)[0] if "/" in relative_path else "user"
+            try:
+                relative_path = str(skill.path.relative_to(root))
+            except ValueError:
+                relative_path = str(skill.path)
+            source = skill.source or "project"
+            source_name = self._skill_source_name(source, skill.path, root)
             sources.add(source)
             estimated_chars += len(skill.content)
             items.append(
                 {
                     "name": skill.name,
+                    "displayName": skill.name,
                     "description": skill.description,
                     "path": str(skill.path),
                     "relativePath": relative_path,
                     "source": source,
+                    "sourceName": source_name,
+                    "version": skill.version,
+                    "userInvocable": skill.user_invocable,
+                    "hasDirectory": skill.path.name.lower() == "skill.md",
                     "sizeBytes": size,
+                    "contentLength": len(skill.content),
+                    "estimatedTokens": max(1, round(len(skill.content) / 4)) if skill.content else 0,
                     "updated": updated,
                 }
             )
+        items.sort(key=lambda item: (str(item["source"]), str(item["name"]).lower(), str(item["relativePath"])))
         return {
             "skillsDir": str(self.config.skills_dir),
-            "ok": True,
-            "error": "",
+            "ok": not errors,
+            "error": "; ".join(errors),
             "skills": items,
             "total": len(items),
             "withDescription": sum(1 for item in items if item["description"]),
             "sources": len(sources),
             "estimatedChars": estimated_chars,
         }
+
+    def _skill_source_roots(self) -> list[tuple[str, Path]]:
+        roots: list[tuple[str, Path]] = [("project", self.config.skills_dir)]
+        default_config_file = Path.home() / ".x-agentic-workflow" / "config.json"
+        if self.config.config_file != default_config_file:
+            return roots
+        home = Path.home()
+        for source, root in [
+            ("user", home / ".claude" / "skills"),
+        ]:
+            if root.exists():
+                roots.append((source, root))
+        roots.extend(("plugin", root) for root in self._claude_plugin_skill_roots())
+        deduped: list[tuple[str, Path]] = []
+        seen: set[Path] = set()
+        for source, root in roots:
+            try:
+                resolved = root.resolve()
+            except OSError:
+                resolved = root
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            deduped.append((source, root))
+        return deduped
+
+    def _claude_plugin_skill_roots(self) -> list[Path]:
+        installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+        roots: list[Path] = []
+        if installed_file.exists():
+            try:
+                data = json.loads(installed_file.read_text(encoding="utf-8"))
+                plugins = data.get("plugins", {})
+                if isinstance(plugins, dict):
+                    for installs in plugins.values():
+                        if not isinstance(installs, list):
+                            continue
+                        for install in installs:
+                            if not isinstance(install, dict):
+                                continue
+                            install_path = Path(str(install.get("installPath", ""))).expanduser()
+                            skills_path = install_path / "skills"
+                            if skills_path.exists():
+                                roots.append(skills_path)
+            except (OSError, TypeError, json.JSONDecodeError):
+                pass
+        fallback = Path.home() / ".claude" / "plugins" / "cache"
+        if fallback.exists() and not roots:
+            for path in sorted(fallback.glob("*/*/*/skills")):
+                if path.exists():
+                    roots.append(path)
+        return roots
+
+    def _discover_top_level_skills(self, root: Path, *, source: str) -> list[Skill]:
+        if not root.exists():
+            return []
+        parser = SkillRegistry(root, source=source, create=False, include_loose_markdown=False)
+        skills: list[Skill] = []
+        for directory in sorted((path for path in root.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+            path = next((candidate for candidate in (directory / "SKILL.md", directory / "skill.md") if candidate.exists()), None)
+            if path is None:
+                continue
+            content = path.read_text(encoding="utf-8")
+            name, description, version, user_invocable = parser._metadata(path, content)
+            skills.append(
+                Skill(
+                    name=name,
+                    description=description,
+                    content=content,
+                    path=path,
+                    source=source,
+                    root=root,
+                    version=version,
+                    user_invocable=user_invocable,
+                )
+            )
+        return skills
+
+    def _skill_source_name(self, source: str, path: Path, root: Path) -> str:
+        if source == "project":
+            return "项目"
+        if source == "user":
+            if ".claude" in path.parts:
+                return "Claude"
+            if ".agents" in path.parts:
+                return "Agents"
+            return "Codex"
+        if source == "plugin":
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                return "插件"
+            parts = relative.parts
+            if len(parts) >= 2:
+                return "/".join(parts[:2])
+            return "插件"
+        return source
 
     def _memory_settings_state(self) -> dict[str, Any]:
         try:
@@ -1429,6 +2157,21 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
                 memory_id = parse_qs(parsed.query).get("id", [""])[0]
                 self._send_json(app.memory_preview(memory_id))
                 return
+            if request_path == "/api/plugins":
+                self._send_json(app.state()["pluginsSettings"])
+                return
+            if request_path == "/api/computer-use":
+                self._send_json(app.state()["computerUseSettings"])
+                return
+            if request_path == "/api/token-usage":
+                self._send_json(app.state()["tokenUsageSettings"])
+                return
+            if request_path == "/api/trace":
+                self._send_json(app.state()["traceSettings"])
+                return
+            if request_path == "/api/diagnostics":
+                self._send_json(app.state()["diagnosticsSettings"])
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
@@ -1453,6 +2196,12 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
             if self.path == "/api/provider/select":
                 self._send_json(app.select_provider_profile(payload))
                 return
+            if self.path == "/api/provider/update":
+                self._send_json(app.update_provider_profile(payload))
+                return
+            if self.path == "/api/provider/delete":
+                self._send_json(app.delete_provider_profile(payload))
+                return
             if self.path == "/api/test-provider":
                 self._send_json(app.test_provider_settings(payload))
                 return
@@ -1464,6 +2213,12 @@ def _handler_for(app: DesktopApp) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/api/mcp/add":
                 self._send_json(app.add_mcp_server(payload))
+                return
+            if self.path == "/api/mcp/toggle":
+                self._send_json(app.toggle_mcp_server(payload))
+                return
+            if self.path == "/api/mcp/delete":
+                self._send_json(app.delete_mcp_server(payload))
                 return
             if self.path == "/api/terminal/probe":
                 self._send_json(app.terminal_probe())
@@ -1527,6 +2282,15 @@ def _looks_like_host(value: str) -> bool:
     return ".." not in value and not value.startswith(".") and not value.endswith(".")
 
 
+def _looks_like_proxy_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _looks_like_env_name(value: str) -> bool:
+    return re.fullmatch(r"[A-Z_][A-Z0-9_]{1,80}", value) is not None
+
+
 def _display_host_for_h5(host: str) -> str:
     if host in {"0.0.0.0", "::"}:
         return _lan_ip()
@@ -1565,6 +2329,14 @@ def _provider_profile_id(display_name: str, base_url: str | None, model: str) ->
         f"{display_name}|{base_url or ''}|{model}".encode()
     ).hexdigest()[:8]
     return f"{slug}-{digest}"
+
+
+def _mcp_server_status(enabled: bool, command: str, url: str | None) -> str:
+    if not enabled:
+        return "Disabled"
+    if url or command:
+        return "Configured"
+    return "Needs configuration"
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -1987,7 +2759,62 @@ def render_desktop_html() -> str:
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
-    body { margin: 0; color: var(--ink); background: #fefefe; overflow: hidden; }
+    body { margin: 0; color: var(--ink); background: #fefefe; overflow: hidden; color-scheme: light; }
+    body.theme-classic {
+      --accent: #ad6048;
+      --soft: #fbf6f3;
+      --side: #f8f1ed;
+      background: #fffaf7;
+      color-scheme: light;
+    }
+    body.theme-dark {
+      --ink: #eef2f7;
+      --muted: #a7b0bd;
+      --line: #2f3846;
+      --soft: #151922;
+      --panel: #10141d;
+      --side: #121824;
+      --accent: #f1a27f;
+      background: #0f131b;
+      color: var(--ink);
+      color-scheme: dark;
+    }
+    body.theme-dark aside,
+    body.theme-dark .settings-nav,
+    body.theme-dark .settings-panel,
+    body.theme-dark .stage,
+    body.theme-dark .inspector,
+    body.theme-dark .setting-card,
+    body.theme-dark .general-card-panel,
+    body.theme-dark .storage-card,
+    body.theme-dark .provider-card,
+    body.theme-dark .mcp-server-card {
+      background: var(--panel);
+      color: var(--ink);
+      border-color: var(--line);
+    }
+    body.theme-dark .segment-option,
+    body.theme-dark .field input,
+    body.theme-dark .field select,
+    body.theme-dark .general-input-row input,
+    body.theme-dark .storage-path,
+    body.theme-dark .mcp-config-path {
+      background: #151b26;
+      color: var(--ink);
+      border-color: var(--line);
+    }
+    body.theme-dark .settings-title,
+    body.theme-dark .general-section h3,
+    body.theme-dark .setting-name,
+    body.theme-dark .provider-name {
+      color: var(--ink);
+    }
+    body.theme-dark .settings-subtitle,
+    body.theme-dark .general-section > p,
+    body.theme-dark .setting-help,
+    body.theme-dark .provider-meta {
+      color: var(--muted);
+    }
     .app { height: 100vh; overflow: hidden; display: grid; grid-template-columns: 360px minmax(620px, 1fr) 360px; }
     .app.inspector-collapsed { grid-template-columns: 360px minmax(620px, 1fr) 56px; }
     aside {
@@ -2353,6 +3180,7 @@ def render_desktop_html() -> str:
     .mcp-server-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
     .mcp-server-name { color: #202633; font-size: 18px; font-weight: 800; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .mcp-server-meta { color: #7a8798; font-size: 14px; line-height: 1.45; word-break: break-word; }
+    .mcp-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .mcp-empty { border: 1px dashed #d8e0ea; border-radius: 8px; color: #7a8798; padding: 22px; background: #fbfcfe; }
     .terminal-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
     .terminal-console {
@@ -2381,6 +3209,21 @@ def render_desktop_html() -> str:
     .agents-eyebrow { color: #8a96a5; font-size: 12px; font-weight: 820; letter-spacing: .18em; text-transform: uppercase; }
     .agents-hero-title { margin-top: 8px; color: #202633; font-size: 24px; font-weight: 840; }
     .agents-hero-copy { margin-top: 10px; color: #627083; font-size: 15px; line-height: 1.55; }
+    .computer-use-overview {
+      border: 1px solid #dfe6ef; border-radius: 10px; background: #fbfcfe;
+      padding: 24px 26px; display: grid; gap: 22px;
+    }
+    .computer-use-copy { max-width: 720px; }
+    .computer-use-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .computer-use-stat {
+      border: 1px solid #dfe6ef; border-radius: 8px; background: white;
+      min-width: 0; padding: 16px 18px;
+    }
+    .computer-use-stat span { display: block; color: #7a8798; font-size: 13px; font-weight: 760; }
+    .computer-use-stat strong {
+      display: block; margin-top: 8px; color: #202633; font-size: 26px; line-height: 1.12;
+      white-space: normal; word-break: keep-all; overflow-wrap: anywhere;
+    }
     .agent-list { border: 1px solid #dfe6ef; border-radius: 8px; background: white; overflow: hidden; }
     .agent-card { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 14px; padding: 18px 20px; border-bottom: 1px solid #e7edf4; align-items: start; }
     .agent-card:last-child { border-bottom: 0; }
@@ -2390,19 +3233,66 @@ def render_desktop_html() -> str:
     .agent-instructions { margin-top: 8px; color: #536172; font-size: 14px; line-height: 1.5; }
     .agent-meta { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; color: #7a8798; font-size: 13px; }
     .agent-arrow { color: #a0a8b4; font-size: 24px; line-height: 1; padding-top: 4px; }
-    .skills-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; }
-    .skills-search {
-      height: 44px; border: 1px solid #d9e1ec; border-radius: 8px; padding: 0 14px;
-      font: inherit; background: white; color: #202633;
+    .skills-browser { display: grid; gap: 22px; }
+    .skills-hero {
+      border: 1px solid #dfe6ef; border-radius: 12px; background: #fbfcfe; overflow: hidden;
+      display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, .9fr); gap: 22px;
+      padding: 24px 26px; align-items: end;
     }
-    .skills-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
-    .skill-list { display: grid; gap: 10px; }
-    .skill-card { border: 1px solid #dfe6ef; border-radius: 8px; background: white; padding: 15px 18px; display: grid; gap: 8px; }
-    .skill-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
-    .skill-name { color: #202633; font-size: 18px; font-weight: 800; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .skill-description { color: #536172; font-size: 14px; line-height: 1.5; }
-    .skill-meta { color: #7a8798; font-size: 13px; line-height: 1.45; word-break: break-word; }
-    .skill-empty { border: 1px dashed #d8e0ea; border-radius: 8px; color: #7a8798; padding: 22px; background: #fbfcfe; }
+    .skills-eyebrow { color: #8a96a5; font-size: 12px; font-weight: 820; letter-spacing: .18em; text-transform: uppercase; }
+    .skills-hero-title { margin-top: 10px; display: flex; align-items: center; gap: 10px; color: #202633; font-size: 24px; font-weight: 840; }
+    .skills-hero-title span { color: #b56049; font-size: 26px; line-height: 1; }
+    .skills-hero-copy { margin-top: 10px; max-width: 760px; color: #627083; font-size: 15px; line-height: 1.6; }
+    .skills-search-shell {
+      margin-top: 18px; max-width: 640px; height: 48px; border: 1px solid #d9e1ec; border-radius: 10px;
+      display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+      padding: 0 14px; background: white; color: #202633;
+    }
+    .skills-search-icon { color: #8a96a5; font-size: 20px; }
+    .skills-search {
+      min-width: 0; height: 44px; border: 0; outline: 0; padding: 0;
+      font: inherit; background: transparent; color: #202633;
+    }
+    .skills-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .skill-summary-card { border: 1px solid #dfe6ef; border-radius: 10px; background: white; padding: 14px; min-width: 0; }
+    .skill-summary-card span { display: flex; gap: 6px; align-items: center; color: #7a8798; font-size: 12px; font-weight: 760; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .skill-summary-card strong { display: block; color: #202633; font-size: 26px; line-height: 1; margin-top: 10px; }
+    .skill-group-grid { display: grid; gap: 16px; }
+    .skill-group-grid.split { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+    .skill-group { border: 1px solid #dfe6ef; border-radius: 12px; background: white; overflow: hidden; min-width: 0; }
+    .skill-group-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+      padding: 18px 20px; border-bottom: 1px solid #e7edf4; background: #fbfcfe;
+    }
+    .skill-source-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .skill-source-icon {
+      width: 32px; height: 32px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
+      background: #fff0e9; color: #b56049; font-size: 18px; flex: 0 0 auto;
+    }
+    .skill-source-icon.project { background: #e9f7ef; color: #0f8f5b; }
+    .skill-source-icon.plugin { background: #fff5df; color: #b7791f; }
+    .skill-source-title { color: #202633; font-size: 16px; font-weight: 820; }
+    .skill-source-count { color: #8a96a5; font-size: 12px; font-weight: 760; }
+    .skill-source-hint { margin-top: 5px; color: #7a8798; font-size: 13px; line-height: 1.45; }
+    .skill-source-tokens { color: #8a96a5; font-size: 12px; white-space: nowrap; }
+    .skill-list { display: grid; padding: 8px; }
+    .skill-card {
+      width: 100%; text-align: left; border: 1px solid transparent; border-radius: 10px; background: transparent;
+      padding: 14px; display: grid; grid-template-columns: 24px minmax(0, 1fr) 20px; gap: 12px; cursor: pointer; font: inherit;
+      transition: background .16s ease, border-color .16s ease, transform .16s ease;
+    }
+    .skill-card:hover { border-color: #d2dce8; background: #f8fafc; }
+    .skill-card-icon { color: #8a96a5; font-size: 18px; line-height: 1.2; padding-top: 2px; }
+    .skill-card-arrow { color: #a0a8b4; font-size: 22px; line-height: 1; padding-top: 2px; }
+    .skill-name-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+    .skill-name { color: #202633; font-size: 16px; font-weight: 820; min-width: 0; overflow-wrap: anywhere; }
+    .skill-description { margin-top: 6px; color: #536172; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+    .skill-meta { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 8px 12px; color: #7a8798; font-size: 12px; line-height: 1.4; }
+    .skill-empty { border: 1px dashed #d8e0ea; border-radius: 10px; color: #7a8798; padding: 26px; background: #fbfcfe; text-align: center; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
     .memory-browser { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: 14px; align-items: start; }
     .memory-list { display: grid; gap: 10px; max-height: 560px; overflow: auto; }
     .memory-card {
@@ -2446,7 +3336,12 @@ def render_desktop_html() -> str:
     .provider-card.preset-only { opacity: .82; }
     .provider-name { font-size: 17px; gap: 8px; }
     .provider-meta { font-size: 14px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .provider-card-action { color: #a5543a; font-weight: 760; font-size: 13px; }
+    .provider-inline-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+    .provider-card-action {
+      border: 0; background: transparent; color: #a5543a; font-weight: 760; font-size: 13px;
+      cursor: pointer; padding: 6px 4px; white-space: nowrap;
+    }
+    .provider-card-action.danger { color: #b42318; }
     .provider-modal { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; background: rgba(15, 23, 42, .42); }
     .provider-modal.active { display: flex; }
     .provider-dialog {
@@ -2524,6 +3419,9 @@ def render_desktop_html() -> str:
     .toggle-control input:checked + span { background: #ad6048; }
     .toggle-control input:checked + span::after { transform: translateX(20px); }
     .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .segmented.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .segmented.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .segmented.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     .segment-option {
       border: 1px solid #d9e1ec; border-radius: 8px; background: #fff; color: #536172;
       padding: 12px; text-align: left; cursor: pointer; font: inherit;
@@ -2534,6 +3432,18 @@ def render_desktop_html() -> str:
     .scale-row { display: grid; grid-template-columns: 1fr 72px; gap: 14px; align-items: center; }
     .scale-row input[type="range"] { width: 100%; accent-color: #ad6048; }
     .scale-value { text-align: center; color: #344054; font-weight: 720; }
+    .general-card-panel { border: 1px solid #dfe6ef; border-radius: 8px; background: #fbfcfe; padding: 16px 18px; display: grid; gap: 12px; }
+    .general-input-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+    .general-input-row input {
+      height: 44px; border: 1px solid #d9e1ec; border-radius: 8px; padding: 0 12px;
+      font: inherit; background: white; color: #202633; min-width: 0;
+    }
+    .step-btn { width: 48px; height: 44px; border: 1px solid #d9e1ec; border-radius: 8px; background: white; color: #344054; font: inherit; font-weight: 820; cursor: pointer; }
+    .env-status { color: #7a8798; font-size: 13px; }
+    .env-status.ok { color: #0f9f6e; }
+    .storage-card { border: 1px solid #dfe6ef; border-radius: 8px; background: white; padding: 16px; display: grid; gap: 12px; }
+    .storage-card.active { border-color: #ad6048; box-shadow: inset 0 0 0 1px rgba(173,96,72,.14); }
+    .storage-path { border: 1px solid #dfe6ef; border-radius: 8px; padding: 12px 14px; background: #fbfcfe; color: #536172; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .general-actions { display: flex; align-items: center; gap: 14px; }
     .app { grid-template-columns: 388px minmax(720px, 1fr) 360px; background: #fff; }
     .app.inspector-collapsed { grid-template-columns: 388px minmax(720px, 1fr) 56px; }
@@ -2595,17 +3505,10 @@ def render_desktop_html() -> str:
       background: currentColor; border-radius: 999px;
     }
     .github-mark {
-      width: 30px; height: 30px; border-radius: 999px; background: #7d8795; color: #f3f6fa;
-      display: grid; place-items: center; position: relative;
+      width: 30px; height: 30px; display: block; color: #7d8795;
     }
-    .github-mark::before {
-      content: ""; width: 16px; height: 13px; border-radius: 9px 9px 6px 6px;
-      background: currentColor; transform: translateY(2px);
-    }
-    .github-mark::after {
-      content: ""; position: absolute; top: 5px; left: 7px; width: 16px; height: 10px;
-      border-radius: 3px 3px 0 0; border-top: 5px solid currentColor;
-      border-left: 4px solid transparent; border-right: 4px solid transparent;
+    .github-mark svg {
+      width: 100%; height: 100%; display: block; fill: currentColor;
     }
     .sidebar-search-row {
       display: grid; grid-template-columns: 1fr 56px 56px; gap: 10px;
@@ -2863,6 +3766,837 @@ def render_desktop_html() -> str:
       border: 1px solid #dbe3ee; background: #fff; color: #667085; border-radius: 10px;
       height: 34px; padding: 0 12px; cursor: pointer;
     }
+    /* Settings visual system override: keep this block late so it wins over legacy shell styles. */
+    .app.settings-open {
+      grid-template-columns: 388px minmax(0, 1fr) 0;
+      background: #f7f9fc;
+    }
+    .app.settings-open .topbar {
+      height: 64px;
+      background: rgba(255, 255, 255, .92);
+      border-bottom: 1px solid #e7ebf1;
+      backdrop-filter: blur(18px);
+    }
+    .app.settings-open .settings-layout {
+      grid-template-columns: 248px minmax(0, 1fr);
+      width: 100%;
+      min-height: calc(100vh - 64px);
+      background: #ffffff;
+    }
+    .app.settings-open .settings-nav {
+      padding: 22px 0;
+      background: #fbfcfe;
+      border-right: 1px solid #e6ebf2;
+    }
+    .app.settings-open .settings-nav button {
+      min-height: 50px;
+      padding: 0 24px;
+      border-radius: 0;
+      color: #667085;
+      font-size: 15px;
+      line-height: 20px;
+      font-weight: 620;
+      letter-spacing: 0;
+      transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+    }
+    .app.settings-open .settings-nav button span:first-child {
+      width: 22px;
+      color: #7b8492;
+      font-size: 18px;
+    }
+    .app.settings-open .settings-nav button.active {
+      background: #eef3f9;
+      color: #1d2530;
+      box-shadow: inset 2px 0 0 #d18a00;
+      font-weight: 760;
+    }
+    .app.settings-open .settings-nav button.active span:first-child { color: #1d2530; }
+    .app.settings-open .settings-panel {
+      max-width: 1040px;
+      padding: 38px 48px 72px;
+      color: #1d2530;
+    }
+    .app.settings-open .settings-head { margin-bottom: 30px; }
+    .app.settings-open .settings-title {
+      font-size: 26px;
+      line-height: 1.18;
+      font-weight: 820;
+      letter-spacing: 0;
+      color: #111827;
+    }
+    .app.settings-open .settings-subtitle {
+      margin-top: 10px;
+      max-width: 760px;
+      color: #7a8696;
+      font-size: 16px;
+      line-height: 1.55;
+      font-weight: 480;
+    }
+    .app.settings-open .general-sections {
+      gap: 34px;
+      padding-bottom: 58px;
+    }
+    .app.settings-open .general-section {
+      gap: 12px;
+      max-width: 880px;
+    }
+    .app.settings-open .general-section h3 {
+      margin: 0;
+      color: #17202c;
+      font-size: 20px;
+      line-height: 1.22;
+      font-weight: 820;
+      letter-spacing: 0;
+    }
+    .app.settings-open .general-section > p {
+      max-width: 790px;
+      color: #8994a3;
+      font-size: 15px;
+      line-height: 1.58;
+      font-weight: 460;
+    }
+    .app.settings-open .setting-card,
+    .app.settings-open .general-card-panel,
+    .app.settings-open .storage-card {
+      border: 1px solid #dfe6ef;
+      border-radius: 8px;
+      background: #fbfcfe;
+      box-shadow: none;
+    }
+    .app.settings-open .setting-card.segmented,
+    .app.settings-open .general-card-panel {
+      padding: 14px;
+    }
+    .app.settings-open .setting-card.segmented.three,
+    .app.settings-open .setting-card.segmented.five {
+      padding: 12px 14px;
+      gap: 12px;
+    }
+    .app.settings-open .segment-option {
+      min-height: 58px;
+      border: 1px solid #d9e1ec;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #566273;
+      padding: 14px 16px;
+      text-align: left;
+      font-weight: 620;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: flex-start;
+      line-height: 1.25;
+      transition: border-color .16s ease, background .16s ease, color .16s ease, box-shadow .16s ease;
+    }
+    .app.settings-open .setting-card.segmented.three .segment-option,
+    .app.settings-open .setting-card.segmented.five .segment-option {
+      min-height: 46px;
+      padding: 0 16px;
+      align-items: center;
+      text-align: center;
+    }
+    .app.settings-open .setting-card.segmented.three .segment-option small {
+      display: none;
+    }
+    .app.settings-open .setting-card.segmented.four .segment-option {
+      min-height: 78px;
+      padding: 14px 16px;
+    }
+    .app.settings-open .segment-option:hover {
+      border-color: #c5d0df;
+      background: #f8fafc;
+      color: #1d2530;
+    }
+    .app.settings-open .segment-option.active {
+      border-color: #ad6048;
+      background: #fff7f3;
+      color: #1d2530;
+      box-shadow: inset 0 0 0 1px rgba(173, 96, 72, .12);
+    }
+    .app.settings-open .segment-option strong {
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 780;
+      display: block;
+    }
+    .app.settings-open .segment-option small {
+      margin-top: 6px;
+      color: #8792a1;
+      font-size: 13px;
+      line-height: 1.38;
+      font-weight: 460;
+      display: block;
+    }
+    .app.settings-open .field label {
+      color: #7b8492;
+      font-size: 13px;
+      font-weight: 720;
+    }
+    .app.settings-open .field input,
+    .app.settings-open .field select,
+    .app.settings-open .general-input-row input,
+    .app.settings-open .storage-path,
+    .app.settings-open .mcp-config-path {
+      height: 46px;
+      border: 1px solid #d9e1ec;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #1d2530;
+      font-size: 15px;
+      line-height: 20px;
+      font-weight: 540;
+    }
+    .app.settings-open .setting-row {
+      min-height: 56px;
+      gap: 28px;
+    }
+    .app.settings-open .setting-name {
+      color: #1d2530;
+      font-size: 15px;
+      font-weight: 780;
+    }
+    .app.settings-open .setting-help {
+      margin-top: 5px;
+      color: #8792a1;
+      font-size: 13px;
+      line-height: 1.48;
+      font-weight: 460;
+    }
+    .app.settings-open .toggle-control {
+      width: 44px;
+      height: 26px;
+    }
+    .app.settings-open .general-actions {
+      position: static;
+      margin-top: 12px;
+      padding: 4px 0 0;
+      background: transparent;
+    }
+    .app.settings-open .primary-btn,
+    .app.settings-open .secondary-btn {
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 20px;
+      font-weight: 760;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .app.settings-open .settings-result {
+      color: #7b8492;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .app.settings-open .settings-nav,
+    .app.settings-open .settings-panel,
+    .app.settings-open .side-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: #c3ccd8 transparent;
+    }
+    .app.settings-open .settings-nav::-webkit-scrollbar,
+    .app.settings-open .settings-panel::-webkit-scrollbar,
+    .app.settings-open .side-scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .app.settings-open .settings-nav::-webkit-scrollbar-track,
+    .app.settings-open .settings-panel::-webkit-scrollbar-track,
+    .app.settings-open .side-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .app.settings-open .settings-nav::-webkit-scrollbar-thumb,
+    .app.settings-open .settings-panel::-webkit-scrollbar-thumb,
+    .app.settings-open .side-scroll::-webkit-scrollbar-thumb {
+      background: #c3ccd8;
+      border: 3px solid transparent;
+      border-radius: 999px;
+      background-clip: content-box;
+    }
+    .app.settings-open .settings-nav::-webkit-scrollbar-thumb:hover,
+    .app.settings-open .settings-panel::-webkit-scrollbar-thumb:hover,
+    .app.settings-open .side-scroll::-webkit-scrollbar-thumb:hover {
+      background: #9eabbc;
+      background-clip: content-box;
+    }
+    body.theme-dark {
+      --dark-bg: #0f1115;
+      --dark-panel: #171717;
+      --dark-panel-2: #1d1c1b;
+      --dark-panel-3: #111315;
+      --dark-border: #292827;
+      --dark-border-2: #353231;
+      --dark-text: #e8e4df;
+      --dark-muted: #a39b95;
+      --dark-subtle: #756e69;
+      --dark-accent: #ffac96;
+      background: var(--dark-bg);
+      color: var(--dark-text);
+    }
+    body.theme-classic {
+      --classic-bg: #fff7f0;
+      --classic-stage: #fff4ea;
+      --classic-panel: #fffaf6;
+      --classic-panel-2: #fff1e8;
+      --classic-border: #ead7ca;
+      --classic-border-2: #d9b7a5;
+      --classic-text: #2b211c;
+      --classic-muted: #8a7164;
+      --classic-accent: #a55339;
+      background: var(--classic-bg);
+      color: var(--classic-text);
+    }
+    body.theme-classic .app,
+    body.theme-classic .app.settings-open {
+      background: var(--classic-stage);
+      color: var(--classic-text);
+    }
+    body.theme-classic aside {
+      background: linear-gradient(180deg, #fff4eb, #f9ebe1);
+      border-right-color: var(--classic-border);
+    }
+    body.theme-classic .topbar,
+    body.theme-classic .app.settings-open .topbar {
+      background: rgba(255, 246, 239, .94);
+      border-bottom-color: var(--classic-border);
+      box-shadow: none;
+    }
+    body.theme-classic .mode-tab,
+    body.theme-classic .mode-tab-static {
+      color: #80695d;
+      border-right-color: var(--classic-border);
+      background: transparent;
+    }
+    body.theme-classic .mode-tab.active {
+      color: var(--classic-text);
+      border-bottom-color: #c36e4c;
+    }
+    body.theme-classic .brand-left,
+    body.theme-classic .main-nav button,
+    body.theme-classic .side-heading,
+    body.theme-classic .project-header,
+    body.theme-classic .account-title,
+    body.theme-classic .settings-gear {
+      color: var(--classic-text);
+    }
+    body.theme-classic .main-nav button,
+    body.theme-classic .conversation-row,
+    body.theme-classic .session-meta,
+    body.theme-classic .relative-age {
+      color: var(--classic-muted);
+    }
+    body.theme-classic .brand-action,
+    body.theme-classic .github-mark {
+      color: var(--classic-muted);
+    }
+    body.theme-classic .shortcut,
+    body.theme-classic .search-shortcut {
+      background: #f7e8dc;
+      border-color: #e5c7b6;
+      color: #8a604f;
+    }
+    body.theme-classic .project-icon.folder-icon {
+      color: var(--classic-text);
+    }
+    body.theme-classic .project-icon.folder-icon::before {
+      background: var(--classic-bg);
+    }
+    body.theme-classic .search-shell,
+    body.theme-classic .sidebar-tool-btn,
+    body.theme-classic .account-card {
+      background: rgba(255, 250, 246, .92);
+      border-color: var(--classic-border);
+      color: var(--classic-text);
+    }
+    body.theme-classic .sidebar-footer {
+      background: rgba(255, 246, 239, .88);
+      border-top-color: var(--classic-border);
+    }
+    body.theme-classic .app.settings-open .settings-layout {
+      background: var(--classic-stage);
+    }
+    body.theme-classic .app.settings-open .settings-nav {
+      background: #fff1e8;
+      border-right-color: var(--classic-border);
+    }
+    body.theme-classic .app.settings-open .settings-nav button {
+      color: #82695c;
+    }
+    body.theme-classic .app.settings-open .settings-nav button span:first-child {
+      color: #99786a;
+    }
+    body.theme-classic .app.settings-open .settings-nav button.active {
+      background: #f4dfd2;
+      color: var(--classic-text);
+      box-shadow: inset 2px 0 0 #bd6d3f;
+    }
+    body.theme-classic .app.settings-open .settings-nav button.active span:first-child {
+      color: var(--classic-text);
+    }
+    body.theme-classic .app.settings-open .settings-panel {
+      color: var(--classic-text);
+    }
+    body.theme-classic .app.settings-open .settings-title,
+    body.theme-classic .app.settings-open .general-section h3,
+    body.theme-classic .app.settings-open .setting-name {
+      color: var(--classic-text);
+    }
+    body.theme-classic .app.settings-open .settings-subtitle,
+    body.theme-classic .app.settings-open .general-section > p,
+    body.theme-classic .app.settings-open .setting-help {
+      color: var(--classic-muted);
+    }
+    body.theme-classic .app.settings-open .setting-card,
+    body.theme-classic .app.settings-open .general-card-panel,
+    body.theme-classic .app.settings-open .storage-card {
+      background: var(--classic-panel);
+      border-color: var(--classic-border);
+    }
+    body.theme-classic .app.settings-open .segment-option {
+      background: #fffdfb;
+      border-color: var(--classic-border);
+      color: #5f4d44;
+    }
+    body.theme-classic .app.settings-open .segment-option:hover {
+      background: #fff8f2;
+      border-color: var(--classic-border-2);
+      color: var(--classic-text);
+    }
+    body.theme-classic .app.settings-open .segment-option.active {
+      background: linear-gradient(180deg, #fff3ea, #ffe3d3);
+      border-color: var(--classic-accent);
+      color: var(--classic-text);
+      box-shadow: 0 0 0 1px rgba(165, 83, 57, .12), 0 12px 28px rgba(165, 83, 57, .08);
+    }
+    body.theme-classic .app.settings-open .segment-option small {
+      color: #927366;
+    }
+    body.theme-classic .app.settings-open .field input,
+    body.theme-classic .app.settings-open .field select,
+    body.theme-classic .app.settings-open .general-input-row input,
+    body.theme-classic .app.settings-open .storage-path,
+    body.theme-classic .app.settings-open .mcp-config-path {
+      background: #fffdfb;
+      border-color: var(--classic-border);
+      color: var(--classic-text);
+    }
+    body.theme-classic .app.settings-open .primary-btn {
+      background: #a55339;
+      box-shadow: 0 10px 22px rgba(165, 83, 57, .12);
+    }
+    body.theme-classic .app.settings-open .secondary-btn,
+    body.theme-classic .secondary-btn {
+      background: #fff9f4;
+      border-color: var(--classic-border);
+      color: var(--classic-text);
+    }
+    body.theme-classic .app.settings-open .general-actions {
+      background: transparent;
+    }
+    body.theme-classic .settings-result {
+      color: var(--classic-muted);
+    }
+    body.theme-classic .skills-hero,
+    body.theme-classic .skill-group,
+    body.theme-classic .skill-summary-card,
+    body.theme-classic .skills-search-shell,
+    body.theme-classic .agents-hero,
+    body.theme-classic .agent-list,
+    body.theme-classic .app.settings-open .agent-list,
+    body.theme-classic .computer-use-overview,
+    body.theme-classic .computer-use-stat,
+    body.theme-classic .mcp-stat,
+    body.theme-classic .app.settings-open .mcp-stat,
+    body.theme-classic .agent-card,
+    body.theme-classic .memory-explorer,
+    body.theme-classic .memory-card,
+    body.theme-classic .memory-explorer-left,
+    body.theme-classic .memory-explorer-right,
+    body.theme-classic .memory-content,
+    body.theme-classic .mcp-empty,
+    body.theme-classic .app.settings-open .mcp-empty,
+    body.theme-classic .memory-empty,
+    body.theme-classic .app.settings-open .memory-empty,
+    body.theme-classic .provider-card,
+    body.theme-classic .app.settings-open .provider-card {
+      background: var(--classic-panel);
+      border-color: var(--classic-border);
+    }
+    body.theme-classic .skill-group-head {
+      background: var(--classic-panel-2);
+      border-bottom-color: var(--classic-border);
+    }
+    body.theme-classic .skills-hero-title,
+    body.theme-classic .skill-source-title,
+    body.theme-classic .skill-summary-card strong,
+    body.theme-classic .skill-name,
+    body.theme-classic .agents-hero-title,
+    body.theme-classic .computer-use-stat strong,
+    body.theme-classic .memory-resource-title,
+    body.theme-classic .mcp-stat strong,
+    body.theme-classic .provider-card-title,
+    body.theme-classic .agent-name,
+    body.theme-classic .memory-title,
+    body.theme-classic .memory-preview-title {
+      color: var(--classic-text);
+    }
+    body.theme-classic .skills-hero-copy,
+    body.theme-classic .skill-description,
+    body.theme-classic .skill-meta,
+    body.theme-classic .skill-source-hint,
+    body.theme-classic .skill-source-count,
+    body.theme-classic .skill-source-tokens,
+    body.theme-classic .skill-summary-card span,
+    body.theme-classic .skills-eyebrow,
+    body.theme-classic .agents-eyebrow,
+    body.theme-classic .agents-hero-copy,
+    body.theme-classic .computer-use-stat span,
+    body.theme-classic .mcp-stat span,
+    body.theme-classic .provider-card-meta,
+    body.theme-classic .agent-instructions,
+    body.theme-classic .agent-meta,
+    body.theme-classic .memory-summary,
+    body.theme-classic .memory-meta,
+    body.theme-classic .memory-preview-path {
+      color: var(--classic-muted);
+    }
+    body.theme-classic .skills-search {
+      color: var(--classic-text);
+    }
+    body.theme-classic .skill-card:hover {
+      background: #fff7f1;
+      border-color: var(--classic-border-2);
+    }
+    body.theme-classic .skill-source-icon {
+      background: #ffe3d3;
+      color: var(--classic-accent);
+    }
+    body.theme-classic .skill-source-icon.project {
+      background: #edf6ec;
+      color: #3d7b4e;
+    }
+    body.theme-classic .skill-source-icon.plugin {
+      background: #fff0c7;
+      color: #9a6a16;
+    }
+    body.theme-classic .app.settings-open .settings-nav,
+    body.theme-classic .app.settings-open .settings-panel,
+    body.theme-classic .app.settings-open .side-scroll {
+      scrollbar-color: rgba(165, 83, 57, .34) transparent;
+    }
+    body.theme-classic .app.settings-open .settings-nav::-webkit-scrollbar-track,
+    body.theme-classic .app.settings-open .settings-panel::-webkit-scrollbar-track,
+    body.theme-classic .app.settings-open .side-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    body.theme-classic .app.settings-open .settings-nav::-webkit-scrollbar-thumb,
+    body.theme-classic .app.settings-open .settings-panel::-webkit-scrollbar-thumb,
+    body.theme-classic .app.settings-open .side-scroll::-webkit-scrollbar-thumb {
+      background: rgba(165, 83, 57, .34);
+      border-color: transparent;
+      background-clip: content-box;
+    }
+    body.theme-classic .app.settings-open .settings-nav::-webkit-scrollbar-thumb:hover,
+    body.theme-classic .app.settings-open .settings-panel::-webkit-scrollbar-thumb:hover,
+    body.theme-classic .app.settings-open .side-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(165, 83, 57, .48);
+      background-clip: content-box;
+    }
+    body.theme-dark .app,
+    body.theme-dark .app.settings-open,
+    body.theme-dark .app.settings-open .settings-layout,
+    body.theme-dark .stage,
+    body.theme-dark .settings-layout {
+      background: var(--dark-bg);
+      color: var(--dark-text);
+    }
+    body.theme-dark aside {
+      background: linear-gradient(180deg, #151515, #101112);
+      border-right-color: var(--dark-border);
+    }
+    body.theme-dark .topbar,
+    body.theme-dark .app.settings-open .topbar {
+      background: rgba(26, 26, 26, .92);
+      border-bottom-color: var(--dark-border);
+      box-shadow: none;
+    }
+    body.theme-dark .mode-tab,
+    body.theme-dark .mode-tab-static {
+      color: #a9a19b;
+      border-right-color: var(--dark-border);
+      background: transparent;
+    }
+    body.theme-dark .mode-tab.active {
+      color: var(--dark-text);
+      border-bottom-color: var(--dark-accent);
+    }
+    body.theme-dark .brand-left,
+    body.theme-dark .main-nav button,
+    body.theme-dark .side-heading,
+    body.theme-dark .project-header,
+    body.theme-dark .account-title,
+    body.theme-dark .settings-gear {
+      color: var(--dark-text);
+    }
+    body.theme-dark .main-nav button,
+    body.theme-dark .conversation-row,
+    body.theme-dark .session-meta,
+    body.theme-dark .relative-age {
+      color: #a8a19b;
+    }
+    body.theme-dark .brand-action,
+    body.theme-dark .github-mark {
+      color: #a8a19b;
+    }
+    body.theme-dark .shortcut,
+    body.theme-dark .search-shortcut {
+      background: #282624;
+      border-color: #3a3734;
+      color: #d4cec8;
+      box-shadow: none;
+    }
+    body.theme-dark .brand-action:hover {
+      background: #1d1c1b;
+      color: var(--dark-text);
+    }
+    body.theme-dark .project-icon.folder-icon {
+      color: var(--dark-text);
+    }
+    body.theme-dark .project-icon.folder-icon::before {
+      background: #151515;
+    }
+    body.theme-dark .search-shell,
+    body.theme-dark .sidebar-tool-btn,
+    body.theme-dark .account-card {
+      background: #1a1a1a;
+      border-color: var(--dark-border-2);
+      color: #bfb7b0;
+    }
+    body.theme-dark .sidebar-footer {
+      background: rgba(17, 17, 17, .82);
+      border-top-color: var(--dark-border);
+    }
+    body.theme-dark .app.settings-open .settings-nav {
+      background: #111315;
+      border-right-color: var(--dark-border);
+    }
+    body.theme-dark .app.settings-open .settings-nav button {
+      color: #918a84;
+    }
+    body.theme-dark .app.settings-open .settings-nav button span:first-child {
+      color: #918a84;
+    }
+    body.theme-dark .app.settings-open .settings-nav button.active {
+      background: #1d1c1b;
+      color: var(--dark-text);
+      box-shadow: inset 2px 0 0 #f3a35c;
+    }
+    body.theme-dark .app.settings-open .settings-nav button.active span:first-child {
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .settings-panel {
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .settings-title,
+    body.theme-dark .app.settings-open .general-section h3,
+    body.theme-dark .app.settings-open .setting-name,
+    body.theme-dark .settings-title,
+    body.theme-dark .general-section h3,
+    body.theme-dark .setting-name {
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .settings-subtitle,
+    body.theme-dark .app.settings-open .general-section > p,
+    body.theme-dark .app.settings-open .setting-help,
+    body.theme-dark .settings-subtitle,
+    body.theme-dark .general-section > p,
+    body.theme-dark .setting-help {
+      color: var(--dark-muted);
+    }
+    body.theme-dark .app.settings-open .setting-card,
+    body.theme-dark .app.settings-open .general-card-panel,
+    body.theme-dark .app.settings-open .storage-card,
+    body.theme-dark .setting-card,
+    body.theme-dark .general-card-panel,
+    body.theme-dark .storage-card {
+      background: var(--dark-panel);
+      border-color: var(--dark-border);
+      box-shadow: none;
+    }
+    body.theme-dark .app.settings-open .segment-option,
+    body.theme-dark .segment-option {
+      background: #151719;
+      border-color: #303235;
+      color: #c8c1bc;
+    }
+    body.theme-dark .app.settings-open .segment-option:hover,
+    body.theme-dark .segment-option:hover {
+      background: #1b1d20;
+      border-color: #444141;
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .segment-option.active,
+    body.theme-dark .segment-option.active {
+      background: linear-gradient(180deg, #ffb49f, #ff7e5d);
+      border-color: #69b7ff;
+      color: #17120f;
+      box-shadow: 0 0 0 1px rgba(105, 183, 255, .72), 0 14px 34px rgba(255, 117, 78, .22);
+    }
+    body.theme-dark .app.settings-open .segment-option.active small,
+    body.theme-dark .segment-option.active small {
+      color: rgba(23, 18, 15, .68);
+    }
+    body.theme-dark .app.settings-open .field input,
+    body.theme-dark .app.settings-open .field select,
+    body.theme-dark .app.settings-open .general-input-row input,
+    body.theme-dark .app.settings-open .storage-path,
+    body.theme-dark .app.settings-open .mcp-config-path,
+    body.theme-dark .field input,
+    body.theme-dark .field select,
+    body.theme-dark .general-input-row input,
+    body.theme-dark .storage-path,
+    body.theme-dark .mcp-config-path {
+      background: #111315;
+      border-color: var(--dark-border);
+      color: var(--dark-text);
+    }
+    body.theme-dark .step-btn,
+    body.theme-dark .secondary-btn,
+    body.theme-dark .app.settings-open .secondary-btn {
+      background: #16181b;
+      border-color: var(--dark-border-2);
+      color: var(--dark-text);
+    }
+    body.theme-dark .app.settings-open .general-actions {
+      background: transparent;
+    }
+    body.theme-dark .settings-result {
+      color: var(--dark-muted);
+    }
+    body.theme-dark .skills-hero,
+    body.theme-dark .skill-group,
+    body.theme-dark .skill-summary-card,
+    body.theme-dark .skills-search-shell,
+    body.theme-dark .agents-hero,
+    body.theme-dark .agent-list,
+    body.theme-dark .app.settings-open .agent-list,
+    body.theme-dark .computer-use-overview,
+    body.theme-dark .computer-use-stat,
+    body.theme-dark .mcp-stat,
+    body.theme-dark .app.settings-open .mcp-stat,
+    body.theme-dark .agent-card,
+    body.theme-dark .memory-explorer,
+    body.theme-dark .memory-card,
+    body.theme-dark .memory-explorer-left,
+    body.theme-dark .memory-explorer-right,
+    body.theme-dark .memory-content,
+    body.theme-dark .mcp-empty,
+    body.theme-dark .app.settings-open .mcp-empty,
+    body.theme-dark .memory-empty,
+    body.theme-dark .app.settings-open .memory-empty,
+    body.theme-dark .provider-card,
+    body.theme-dark .app.settings-open .provider-card {
+      background: var(--dark-panel);
+      border-color: var(--dark-border);
+    }
+    body.theme-dark .skill-group-head {
+      background: var(--dark-panel-2);
+      border-bottom-color: var(--dark-border);
+    }
+    body.theme-dark .skills-hero-title,
+    body.theme-dark .skill-source-title,
+    body.theme-dark .skill-summary-card strong,
+    body.theme-dark .skill-name,
+    body.theme-dark .agents-hero-title,
+    body.theme-dark .computer-use-stat strong,
+    body.theme-dark .memory-resource-title,
+    body.theme-dark .mcp-stat strong,
+    body.theme-dark .provider-card-title,
+    body.theme-dark .agent-name,
+    body.theme-dark .memory-title,
+    body.theme-dark .memory-preview-title {
+      color: var(--dark-text);
+    }
+    body.theme-dark .skills-hero-copy,
+    body.theme-dark .skill-description,
+    body.theme-dark .skill-meta,
+    body.theme-dark .skill-source-hint,
+    body.theme-dark .skill-source-count,
+    body.theme-dark .skill-source-tokens,
+    body.theme-dark .skill-summary-card span,
+    body.theme-dark .skills-eyebrow,
+    body.theme-dark .agents-eyebrow,
+    body.theme-dark .agents-hero-copy,
+    body.theme-dark .computer-use-stat span,
+    body.theme-dark .mcp-stat span,
+    body.theme-dark .provider-card-meta,
+    body.theme-dark .agent-instructions,
+    body.theme-dark .agent-meta,
+    body.theme-dark .memory-summary,
+    body.theme-dark .memory-meta,
+    body.theme-dark .memory-preview-path {
+      color: var(--dark-muted);
+    }
+    body.theme-dark .badge {
+      background: #252422;
+      color: #bfb7b0;
+    }
+    body.theme-dark .badge.ok {
+      background: rgba(97, 180, 128, .16);
+      color: #91d39d;
+    }
+    body.theme-dark .badge.hot {
+      background: rgba(255, 181, 159, .16);
+      color: var(--dark-accent);
+    }
+    body.theme-dark .skills-search {
+      color: var(--dark-text);
+    }
+    body.theme-dark .skill-card:hover {
+      background: #1b1d20;
+      border-color: var(--dark-border-2);
+    }
+    body.theme-dark .skill-source-icon {
+      background: rgba(255, 181, 159, .16);
+      color: var(--dark-accent);
+    }
+    body.theme-dark .skill-source-icon.project {
+      background: rgba(97, 180, 128, .15);
+      color: #91d39d;
+    }
+    body.theme-dark .skill-source-icon.plugin {
+      background: rgba(255, 198, 90, .15);
+      color: #e1b45f;
+    }
+    body.theme-dark .app.settings-open .settings-nav,
+    body.theme-dark .app.settings-open .settings-panel,
+    body.theme-dark .app.settings-open .side-scroll {
+      scrollbar-color: #615a56 #101112;
+    }
+    body.theme-dark .app.settings-open .settings-nav::-webkit-scrollbar-track,
+    body.theme-dark .app.settings-open .side-scroll::-webkit-scrollbar-track {
+      background: #101112;
+    }
+    body.theme-dark .app.settings-open .settings-panel::-webkit-scrollbar-track {
+      background: var(--dark-bg);
+    }
+    body.theme-dark .app.settings-open .settings-nav::-webkit-scrollbar-thumb,
+    body.theme-dark .app.settings-open .side-scroll::-webkit-scrollbar-thumb {
+      background: #615a56;
+      border-color: #101112;
+      background-clip: content-box;
+    }
+    body.theme-dark .app.settings-open .settings-panel::-webkit-scrollbar-thumb {
+      background: #615a56;
+      border-color: var(--dark-bg);
+      background-clip: content-box;
+    }
+    body.theme-dark .app.settings-open .settings-nav::-webkit-scrollbar-thumb:hover,
+    body.theme-dark .app.settings-open .settings-panel::-webkit-scrollbar-thumb:hover,
+    body.theme-dark .app.settings-open .side-scroll::-webkit-scrollbar-thumb:hover {
+      background: #7a706a;
+      background-clip: content-box;
+    }
     @media (max-width: 1400px) {
       .app.settings-open { grid-template-columns: 300px minmax(0, 1fr) 0; }
       .app.settings-open .settings-layout { grid-template-columns: 210px minmax(0, 1fr); }
@@ -2895,7 +4629,25 @@ def render_desktop_html() -> str:
       <div class="brand">
         <div class="brand-left"><span class="logo">C</span><span>cat-<em>agentic</em></span></div>
         <div class="brand-actions">
-          <button class="brand-action" id="githubBtn" title="打开 GitHub 仓库"><span class="github-mark" aria-hidden="true"></span></button>
+          <button class="brand-action" id="githubBtn" title="打开 GitHub 仓库">
+            <span class="github-mark" aria-hidden="true">
+              <svg viewBox="0 0 98 96" focusable="false">
+                <path d="
+                  M48.9 0C21.9 0 0 22 0 49.1c0 21.7 14 40 33.5 46.5 2.5.5
+                  3.4-1.1 3.4-2.4 0-1.2 0-5.1-.1-9.3-13.6 3-16.5-5.9-16.5-5.9
+                  -2.2-5.7-5.4-7.2-5.4-7.2-4.5-3.1.3-3 .3-3 4.9.3 7.5
+                  5.1 7.5 5.1 4.4 7.5 11.5 5.4 14.3 4.1.4-3.2 1.7-5.4
+                  3.1-6.6-10.9-1.2-22.3-5.5-22.3-24.3 0-5.4 1.9-9.8
+                  5.1-13.2-.5-1.2-2.2-6.3.5-13 0 0 4.1-1.3 13.5 5
+                  3.9-1.1 8.1-1.6 12.3-1.6s8.4.5 12.3 1.6c9.4-6.3
+                  13.5-5 13.5-5 2.7 6.7 1 11.8.5 13 3.2 3.5 5.1 7.9
+                  5.1 13.2 0 18.9-11.5 23.1-22.4 24.3 1.8 1.5 3.3 4.5
+                  3.3 9.1 0 6.6-.1 11.9-.1 13.5 0 1.3.9 2.9 3.4 2.4
+                  C84 89 98 70.7 98 49.1 98 22 76.1 0 48.9 0Z
+                "/>
+              </svg>
+            </span>
+          </button>
           <button class="brand-action" id="sidebarToggle" title="折叠侧栏">‹</button>
         </div>
       </div>
@@ -2985,11 +4737,11 @@ def render_desktop_html() -> str:
               <button data-settings-view="agents"><span>▦</span><span class="settings-nav-label">Agents</span></button>
               <button data-settings-view="skills"><span>✦</span><span class="settings-nav-label">技能</span></button>
               <button data-settings-view="memory"><span>▧</span><span class="settings-nav-label">记忆</span></button>
-              <button class="pending" disabled><span>⌘</span><span class="settings-nav-label">插件</span><span class="settings-nav-status">后续</span></button>
-              <button class="pending" disabled><span>◉</span><span class="settings-nav-label">Computer Use</span><span class="settings-nav-status">后续</span></button>
-              <button class="pending" disabled><span>▥</span><span class="settings-nav-label">Token 用量</span><span class="settings-nav-status">后续</span></button>
-              <button class="pending" disabled><span>⌘</span><span class="settings-nav-label">Trace</span><span class="settings-nav-status">后续</span></button>
-              <button class="pending" disabled><span>≋</span><span class="settings-nav-label">诊断</span><span class="settings-nav-status">后续</span></button>
+              <button data-settings-view="plugins"><span>⌘</span><span class="settings-nav-label">插件</span></button>
+              <button data-settings-view="computerUse"><span>◉</span><span class="settings-nav-label">Computer Use</span></button>
+              <button data-settings-view="tokenUsage"><span>▥</span><span class="settings-nav-label">Token 用量</span></button>
+              <button data-settings-view="trace"><span>⌘</span><span class="settings-nav-label">Trace</span></button>
+              <button data-settings-view="diagnostics"><span>≋</span><span class="settings-nav-label">诊断</span></button>
             </div>
             <div class="settings-panel active" id="providerSettingsPanel">
               <div class="settings-head">
@@ -3019,7 +4771,7 @@ def render_desktop_html() -> str:
                     </div>
                     <div class="field">
                       <label for="providerBaseUrl">接口地址 *</label>
-                      <input id="providerBaseUrl" placeholder="https://api.deepseek.com/anthropic" />
+                      <input id="providerBaseUrl" placeholder="https://api.openai.com/v1" />
                     </div>
                     <div class="field">
                       <label for="providerAuthLabel">认证变量</label>
@@ -3040,7 +4792,7 @@ def render_desktop_html() -> str:
                     </div>
                     <div class="field">
                       <label for="providerModel">模型 *</label>
-                      <input id="providerModel" placeholder="deepseek-v4-pro" />
+                      <input id="providerModel" placeholder="gpt-4.1" />
                     </div>
                     <div class="provider-toggle-row">
                       <input type="checkbox" id="providerToolSearch" />
@@ -3061,44 +4813,197 @@ def render_desktop_html() -> str:
               <div class="settings-head">
                 <div>
                   <div class="settings-title">通用</div>
-                  <div class="settings-subtitle">控制桌面端会话、输入和本机通知行为。</div>
+                  <div class="settings-subtitle">控制桌面端显示、会话权限、网络请求、搜索和数据目录。</div>
                 </div>
               </div>
               <div class="general-sections">
                 <section class="general-section">
-                  <h3>命令审批</h3>
-                  <p>运行终端命令前是否必须获得确认。</p>
+                  <h3>配色主题</h3>
+                  <p>在纯白、经典暖色和暗色工作区之间切换。</p>
+                  <div class="setting-card segmented three">
+                    <button class="segment-option" data-theme="pure"><strong>纯白</strong><small>浅色高对比工作区。</small></button>
+                    <button class="segment-option" data-theme="classic"><strong>经典暖色</strong><small>使用暖色强调和柔和背景。</small></button>
+                    <button class="segment-option" data-theme="dark"><strong>暗色</strong><small>低亮度桌面工作区。</small></button>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>语言</h3>
+                  <p>选择桌面端显示语言和新会话默认回复语言。</p>
+                  <div class="setting-card segmented five">
+                    <button class="segment-option" data-language="en"><strong>English</strong></button>
+                    <button class="segment-option" data-language="zh-CN"><strong>简体中文</strong></button>
+                    <button class="segment-option" data-language="zh-TW"><strong>繁體中文</strong></button>
+                    <button class="segment-option" data-language="ja"><strong>日本語</strong></button>
+                    <button class="segment-option" data-language="ko"><strong>한국어</strong></button>
+                  </div>
+                  <div class="field">
+                    <label for="replyLanguage">回复语言</label>
+                    <select id="replyLanguage">
+                      <option value="default">默认（跟随模型 / 英语）</option>
+                      <option value="en">English</option>
+                      <option value="zh-CN">简体中文</option>
+                      <option value="zh-TW">繁體中文</option>
+                      <option value="ja">日本語</option>
+                      <option value="ko">한국어</option>
+                    </select>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>输出风格</h3>
+                  <p>选择新会话或重启后的表达方式。</p>
+                  <div class="setting-card segmented four">
+                    <button class="segment-option" data-output-style="default"><strong>Default</strong><small>高效完成编码任务，回答保持简洁。</small></button>
+                    <button class="segment-option" data-output-style="concise"><strong>Concise</strong><small>更短的执行汇报。</small></button>
+                    <button class="segment-option" data-output-style="explanatory"><strong>Explain</strong><small>保留更多上下文解释。</small></button>
+                    <button class="segment-option" data-output-style="review"><strong>Review</strong><small>更偏审查和风险提示。</small></button>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>默认会话权限</h3>
+                  <p>选择桌面端新建会话时默认使用的权限模式。</p>
+                  <div class="setting-card segmented">
+                    <button class="segment-option" data-permission-mode="ask"><strong>询问</strong><small>运行终端命令前要求确认。</small></button>
+                    <button class="segment-option" data-permission-mode="skip"><strong>跳过</strong><small>允许命令直接运行，仅适合可信项目。</small></button>
+                  </div>
                   <div class="setting-card">
                     <div class="setting-row">
-                      <div class="setting-copy"><div class="setting-name">要求命令审批</div><div class="setting-help">关闭后，模型发起的命令可以直接运行。建议保持开启。</div></div>
+                      <div class="setting-copy"><div class="setting-name">要求命令审批</div><div class="setting-help">权限模式为“跳过”时会自动关闭。建议日常保持开启。</div></div>
                       <label class="toggle-control"><input type="checkbox" id="requireCommandApproval" /><span></span></label>
                     </div>
                   </div>
                 </section>
                 <section class="general-section">
-                  <h3>消息发送方式</h3>
-                  <p>选择输入框如何发送消息。</p>
-                  <div class="setting-card segmented" id="sendModeControl">
-                    <button class="segment-option" data-send-mode="enter"><strong>Enter 发送</strong><small>Shift+Enter 换行</small></button>
-                    <button class="segment-option" data-send-mode="modifier-enter"><strong>Ctrl/Cmd+Enter 发送</strong><small>Enter 换行</small></button>
+                  <h3>思考模式</h3>
+                  <p>控制新会话是否启用模型思考。关闭后，兼容供应商会收到显式非思考模式参数。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">启用思考模式</div><div class="setting-help">适合复杂任务；弱模型或低延迟场景可以关闭。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="thinkingEnabled" /><span></span></label>
+                    </div>
                   </div>
                 </section>
                 <section class="general-section">
-                  <h3>界面缩放</h3>
-                  <p>调整桌面界面的显示大小。</p>
-                  <div class="setting-card scale-row">
-                    <input type="range" id="uiScale" min="50" max="200" step="5" value="100" />
-                    <div class="scale-value" id="uiScaleValue">100%</div>
+                  <h3>自动做梦</h3>
+                  <p>在积累足够会话后，后台整理和压缩 auto-memory。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">启用自动做梦</div><div class="setting-help">默认关闭，因为它可能发起后台模型调用。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="autoMemoryEnabled" /><span></span></label>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>Agent Trace</h3>
+                  <p>收集本地会话的模型请求链路，用于排查卡住、失败和异常等待。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">收集 Agent Trace</div><div class="setting-help">写入本机 trace 目录；不上传到远端。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="traceEnabled" /><span></span></label>
+                    </div>
+                    <div class="storage-path" id="tracePath">-</div>
                   </div>
                 </section>
                 <section class="general-section">
                   <h3>系统通知</h3>
-                  <p>任务完成后使用浏览器的系统通知能力提醒。</p>
+                  <p>使用系统原生通知提醒授权确认、Agent 回复完成和定时任务结果。</p>
                   <div class="setting-card">
                     <div class="setting-row">
                       <div class="setting-copy"><div class="setting-name">启用系统通知</div><div class="setting-help">首次开启时浏览器会请求通知权限。</div></div>
                       <label class="toggle-control"><input type="checkbox" id="notificationsEnabled" /><span></span></label>
                     </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>消息发送方式</h3>
+                  <p>选择桌面端对话输入框如何发送消息。</p>
+                  <div class="setting-card segmented" id="sendModeControl">
+                    <button class="segment-option" data-send-mode="enter"><strong>Enter 发送</strong><small>Shift+Enter 换行。</small></button>
+                    <button class="segment-option" data-send-mode="modifier-enter"><strong>Ctrl/Cmd+Enter 发送</strong><small>Enter 和 Shift+Enter 都会换行。</small></button>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>界面缩放</h3>
+                  <p>调整整个界面的显示大小。</p>
+                  <div class="general-card-panel">
+                    <div class="scale-row">
+                      <input type="range" id="uiScale" min="50" max="200" step="5" value="100" />
+                      <div class="scale-value" id="uiScaleValue">100%</div>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>网络</h3>
+                  <p>控制桌面会话发起的服务商 API 请求。</p>
+                  <div class="general-card-panel">
+                    <div class="segmented three">
+                      <button class="segment-option" data-network-mode="direct"><strong>直连</strong><small>服务商 API 请求不使用应用继承到的代理。</small></button>
+                      <button class="segment-option" data-network-mode="system"><strong>系统代理</strong><small>使用应用进程继承到的代理设置。</small></button>
+                      <button class="segment-option" data-network-mode="manual"><strong>手动代理</strong><small>使用下方填写的 HTTP 或 HTTPS 代理地址。</small></button>
+                    </div>
+                    <div class="field">
+                      <label for="manualProxy">手动代理地址</label>
+                      <input id="manualProxy" placeholder="http://127.0.0.1:7890" />
+                    </div>
+                    <div class="setting-name">AI 请求超时</div>
+                    <div class="general-input-row">
+                      <button class="step-btn" data-timeout-step="-30">-30</button>
+                      <input id="aiRequestTimeoutSeconds" inputmode="numeric" />
+                      <button class="step-btn" data-timeout-step="30">+30</button>
+                    </div>
+                    <div class="setting-help">用于服务商请求、流式首响应和连接测试。支持 30-1800 秒。</div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>WebFetch 预检</h3>
+                  <p>默认跳过域名预检，避免第三方供应商或受限网络下出现误报失败。</p>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">跳过 WebFetch 域名预检</div><div class="setting-help">只有明确需要恢复上游默认安全预检时，才建议关闭。</div></div>
+                      <label class="toggle-control"><input type="checkbox" id="webfetchPreflightSkip" /><span></span></label>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>WebSearch</h3>
+                  <p>配置 Agent 联网搜索在 Claude 原生、第三方供应商和本地 fallback key 之间如何选择。</p>
+                  <div class="general-card-panel">
+                    <div class="segmented five">
+                      <button class="segment-option" data-web-search-provider="auto"><strong>自动</strong></button>
+                      <button class="segment-option" data-web-search-provider="tavily"><strong>Tavily</strong></button>
+                      <button class="segment-option" data-web-search-provider="brave"><strong>Brave</strong></button>
+                      <button class="segment-option" data-web-search-provider="provider"><strong>模型原生</strong></button>
+                      <button class="segment-option" data-web-search-provider="off"><strong>关闭</strong></button>
+                    </div>
+                    <div class="field">
+                      <label for="tavilyApiKeyEnv">Tavily API Key 环境变量</label>
+                      <input id="tavilyApiKeyEnv" placeholder="TAVILY_API_KEY" />
+                      <div class="env-status" id="tavilyApiKeyStatus">未检测</div>
+                    </div>
+                    <div class="field">
+                      <label for="braveApiKeyEnv">Brave Search API Key 环境变量</label>
+                      <input id="braveApiKeyEnv" placeholder="BRAVE_SEARCH_API_KEY" />
+                      <div class="env-status" id="braveApiKeyStatus">未检测</div>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>数据存储位置</h3>
+                  <p>切换后，会话记录、Skills、MCP、Provider 配置、任务和缓存会从新的目录读取。</p>
+                  <div class="general-card-panel">
+                    <div class="storage-card" data-data-dir-mode="system">
+                      <div class="setting-name">使用系统目录</div>
+                      <div class="setting-help">回到默认数据源。启动环境变量仍可覆盖实际读取目录。</div>
+                    </div>
+                    <div class="storage-card" data-data-dir-mode="portable">
+                      <div class="setting-name">使用便携目录</div>
+                      <div class="setting-help">适合放在移动硬盘或和应用一起打包迁移。</div>
+                      <div class="field">
+                        <label for="portableDataDir">便携数据目录</label>
+                        <input id="portableDataDir" placeholder="/Applications/Cat Agentic.app/Contents/MacOS/data" />
+                      </div>
+                    </div>
+                    <div class="setting-help">当前实际读取目录</div>
+                    <div class="storage-path" id="actualDataDir">-</div>
                   </div>
                 </section>
                 <div class="general-actions">
@@ -3320,37 +5225,32 @@ def render_desktop_html() -> str:
             <div class="settings-panel" id="skillsSettingsPanel">
               <div class="settings-head">
                 <div>
-                  <div class="settings-title">技能</div>
-                  <div class="settings-subtitle">浏览本机技能目录中可被 Agent 按名称触发的 Markdown 技能。</div>
+                  <div class="settings-title">已安装技能</div>
+                  <div class="settings-subtitle">技能扩展 Agent 的能力。读取本机已安装技能，比较来源、规模和可触发信息。</div>
                 </div>
                 <button class="secondary-btn" id="refreshSkillsSettings">刷新</button>
               </div>
-              <div class="general-sections">
-                <section class="general-section">
-                  <h3>技能目录</h3>
-                  <p>当前版本读取本机技能索引，不展示完整正文，也不安装外部技能。</p>
-                  <div class="setting-card">
-                    <div class="mcp-config-path" id="skillsDir">-</div>
-                    <div class="settings-result" id="skillsResult"></div>
+              <div class="skills-browser">
+                <section class="skills-hero">
+                  <div>
+                    <div class="skills-eyebrow">技能目录</div>
+                    <div class="skills-hero-title"><span>✦</span>浏览已安装技能</div>
+                    <div class="skills-hero-copy">查看项目、用户和插件技能，按来源分组浏览。这里只读取摘要，不加载完整正文进页面。</div>
+                    <label class="sr-only" for="skillsSearch">搜索技能</label>
+                    <div class="skills-search-shell">
+                      <span class="skills-search-icon">⌕</span>
+                      <input class="skills-search" id="skillsSearch" placeholder="搜索技能名称、描述或来源..." />
+                      <span class="badge" id="skillsFilterCount">0/0</span>
+                    </div>
                   </div>
-                </section>
-                <section class="general-section">
-                  <h3>技能概览</h3>
                   <div class="skills-summary-grid">
-                    <div class="mcp-stat"><span>技能总数</span><strong id="skillsTotal">0</strong></div>
-                    <div class="mcp-stat"><span>有描述</span><strong id="skillsDescribed">0</strong></div>
-                    <div class="mcp-stat"><span>来源数</span><strong id="skillsSources">0</strong></div>
-                    <div class="mcp-stat"><span>约字符</span><strong id="skillsChars">0</strong></div>
+                    <div class="skill-summary-card"><span>✦ 技能</span><strong id="skillsTotal">0</strong></div>
+                    <div class="skill-summary-card"><span>▱ 来源</span><strong id="skillsSources">0</strong></div>
+                    <div class="skill-summary-card"><span>☰ 预估 Token</span><strong id="skillsTokens">0</strong></div>
                   </div>
                 </section>
-                <section class="general-section">
-                  <h3>已安装技能</h3>
-                  <div class="skills-toolbar">
-                    <input class="skills-search" id="skillsSearch" placeholder="搜索技能名称、描述或路径..." />
-                    <span class="badge" id="skillsFilterCount">0</span>
-                  </div>
-                  <div class="skill-list" id="skillsList"></div>
-                </section>
+                <div class="settings-result" id="skillsResult"></div>
+                <div class="skill-group-grid" id="skillsList"></div>
               </div>
             </div>
             <div class="settings-panel" id="memorySettingsPanel">
@@ -3405,6 +5305,139 @@ def render_desktop_html() -> str:
                       <pre class="memory-content" id="memoryPreviewContent">暂无预览。</pre>
                     </div>
                   </div>
+                </section>
+              </div>
+            </div>
+            <div class="settings-panel" id="pluginsSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">插件</div>
+                  <div class="settings-subtitle">浏览本机 Codex 插件缓存，查看插件来源、技能数量和 MCP 入口。</div>
+                </div>
+                <button class="secondary-btn" id="refreshPluginsSettings">刷新</button>
+              </div>
+              <div class="skills-browser">
+                <section class="skills-hero">
+                  <div>
+                    <div class="skills-eyebrow">插件浏览器</div>
+                    <div class="skills-hero-title"><span>⌘</span>本机插件索引</div>
+                    <div class="skills-hero-copy">只读取插件目录结构和 manifest 路径，不读取密钥值。插件能力会继续通过 Skills、MCP 和本机运行时逐步接入。</div>
+                  </div>
+                  <div class="skills-summary-grid">
+                    <div class="skill-summary-card"><span>⌘ 插件</span><strong id="pluginsTotal">0</strong></div>
+                    <div class="skill-summary-card"><span>✦ 含技能</span><strong id="pluginsWithSkills">0</strong></div>
+                    <div class="skill-summary-card"><span>▤ 含 MCP</span><strong id="pluginsWithMcp">0</strong></div>
+                  </div>
+                </section>
+                <div class="settings-result" id="pluginsResult"></div>
+                <div class="skill-group-grid" id="pluginsList"></div>
+              </div>
+            </div>
+            <div class="settings-panel" id="computerUseSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">Computer Use</div>
+                  <div class="settings-subtitle">检查本机截图、自动化和浏览器控制能力。实际控制仍需要用户授权和命令审批。</div>
+                </div>
+                <button class="secondary-btn" id="refreshComputerUseSettings">刷新</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <div class="computer-use-overview">
+                    <div class="computer-use-copy">
+                      <div class="agents-eyebrow">本机能力</div>
+                      <div class="agents-hero-title">桌面控制状态</div>
+                      <div class="agents-hero-copy" id="computerUseNote">正在读取 Computer Use 状态。</div>
+                    </div>
+                    <div class="computer-use-stats">
+                      <div class="computer-use-stat"><span>平台</span><strong id="computerUsePlatform">-</strong></div>
+                      <div class="computer-use-stat"><span>可用能力</span><strong id="computerUseAvailable">0</strong></div>
+                      <div class="computer-use-stat"><span>授权</span><strong id="computerUsePermission">-</strong></div>
+                    </div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>能力清单</h3>
+                  <div class="agent-list" id="computerUseCapabilities"></div>
+                </section>
+              </div>
+            </div>
+            <div class="settings-panel" id="tokenUsageSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">Token 用量</div>
+                  <div class="settings-subtitle">从本机会话记录估算消息规模，便于查看趋势；不等同于服务商账单。</div>
+                </div>
+                <button class="secondary-btn" id="refreshTokenUsageSettings">刷新</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <div class="skills-summary-grid">
+                    <div class="mcp-stat"><span>会话</span><strong id="tokenSessionCount">0</strong></div>
+                    <div class="mcp-stat"><span>消息</span><strong id="tokenMessageCount">0</strong></div>
+                    <div class="mcp-stat"><span>估算 Token</span><strong id="tokenEstimated">0</strong></div>
+                    <div class="mcp-stat"><span>单次上限</span><strong id="tokenMax">0</strong></div>
+                  </div>
+                  <div class="settings-result" id="tokenUsageResult"></div>
+                </section>
+                <section class="general-section">
+                  <h3>最近会话估算</h3>
+                  <div class="memory-list" id="tokenUsageList"></div>
+                </section>
+              </div>
+            </div>
+            <div class="settings-panel" id="traceSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">Trace</div>
+                  <div class="settings-subtitle">查看本机 trace 目录、文件数量和最近记录。Trace 开关在“通用”页保存。</div>
+                </div>
+                <button class="secondary-btn" id="refreshTraceSettings">刷新</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <h3>Trace 状态</h3>
+                  <div class="setting-card">
+                    <div class="setting-row">
+                      <div class="setting-copy"><div class="setting-name">收集 Agent Trace</div><div class="setting-help" id="traceSettingsStatus">正在读取。</div></div>
+                      <span class="badge" id="traceEnabledBadge">-</span>
+                    </div>
+                    <div class="mcp-config-path" id="traceDir">-</div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <div class="skills-summary-grid">
+                    <div class="mcp-stat"><span>文件</span><strong id="traceFileCount">0</strong></div>
+                    <div class="mcp-stat"><span>大小</span><strong id="traceSize">0</strong></div>
+                    <div class="mcp-stat"><span>目录</span><strong id="traceDirExists">-</strong></div>
+                  </div>
+                </section>
+                <section class="general-section">
+                  <h3>最近 Trace 文件</h3>
+                  <div class="memory-list" id="traceFileList"></div>
+                </section>
+              </div>
+            </div>
+            <div class="settings-panel" id="diagnosticsSettingsPanel">
+              <div class="settings-head">
+                <div>
+                  <div class="settings-title">诊断</div>
+                  <div class="settings-subtitle">聚合本机配置、目录、服务商、MCP、Skills 和插件索引状态。</div>
+                </div>
+                <button class="primary-btn" id="refreshDiagnosticsSettings">重新诊断</button>
+              </div>
+              <div class="general-sections">
+                <section class="general-section">
+                  <div class="skills-summary-grid">
+                    <div class="mcp-stat"><span>通过</span><strong id="diagnosticsPass">0</strong></div>
+                    <div class="mcp-stat"><span>警告</span><strong id="diagnosticsWarn">0</strong></div>
+                    <div class="mcp-stat"><span>失败</span><strong id="diagnosticsFail">0</strong></div>
+                  </div>
+                  <div class="settings-result" id="diagnosticsResult"></div>
+                </section>
+                <section class="general-section">
+                  <h3>检查项</h3>
+                  <div class="agent-list" id="diagnosticsChecks"></div>
                 </section>
               </div>
             </div>
@@ -3485,9 +5518,18 @@ def render_desktop_html() -> str:
     let providerSubmitting = false;
     let providerPresets = [];
     let selectedProviderPreset = 'deepseek';
+    let editingProviderId = '';
     let currentDraftKey = '';
     let desktopSendMode = 'modifier-enter';
     let desktopNotificationsEnabled = false;
+    let desktopTheme = 'pure';
+    let desktopLanguage = 'zh-CN';
+    let desktopOutputStyle = 'default';
+    let desktopPermissionMode = 'ask';
+    let desktopNetworkMode = 'direct';
+    let desktopWebSearchProvider = 'auto';
+    let desktopDataDirMode = 'system';
+    let latestSkillItems = [];
     let latestMemoryItems = [];
     let selectedMemoryId = '';
     let mcpAddScope = 'project-private';
@@ -3525,8 +5567,14 @@ def render_desktop_html() -> str:
       renderAgentsSettings(state.agentsSettings || {});
       renderSkillsSettings(state.skillsSettings || {});
       renderMemorySettings(state.memorySettings || {});
+      renderPluginsSettings(state.pluginsSettings || {});
+      renderComputerUseSettings(state.computerUseSettings || {});
+      renderTokenUsageSettings(state.tokenUsageSettings || {});
+      renderTraceSettings(state.traceSettings || {});
+      renderDiagnosticsSettings(state.diagnosticsSettings || {});
       if (state.providerSave) showProviderResult(state.providerSave);
       if (state.providerTest) showProviderResult(state.providerTest);
+      if (state.mcpSave) showMcpResult(state.mcpSave);
       if (state.generalSave) showGeneralResult(state.generalSave);
       if (state.h5Save) showH5Result(state.h5Save);
       renderProjectValidation(state.projectValidation);
@@ -3611,37 +5659,56 @@ def render_desktop_html() -> str:
         const presetOnly = profile.presetOnly ? ' preset-only' : '';
         const dot = profile.active || profile.apiKeyPresent ? ' on' : '';
         const defaultBadge = profile.active ? '<span class="badge hot">默认</span>' : '';
-        const action = profile.presetOnly ? '<span class="provider-card-action">添加</span>' : '<span class="provider-card-action">设为默认</span>';
+        const action = profile.presetOnly
+          ? `<button class="provider-card-action" data-provider-add="${escapeHtml(profile.displayName || '')}">添加</button>`
+          : `<div class="provider-inline-actions">
+              ${profile.active ? '' : `<button class="provider-card-action" data-provider-select="${escapeHtml(profile.id)}">设为默认</button>`}
+              <button class="provider-card-action" data-provider-edit="${escapeHtml(profile.id)}">编辑</button>
+              <button class="provider-card-action danger" data-provider-delete="${escapeHtml(profile.id)}">删除</button>
+            </div>`;
         const meta = `${profile.baseUrl || 'Default endpoint'} · ${profile.model || '未配置模型'}`;
-        return `<button class="provider-card${active}${presetOnly}" data-provider-id="${escapeHtml(profile.id)}" data-preset-only="${profile.presetOnly ? '1' : '0'}" data-preset-name="${escapeHtml(profile.displayName || '')}">
+        return `<div class="provider-card${active}${presetOnly}" data-provider-id="${escapeHtml(profile.id)}">
           <div class="drag">⋮⋮</div><div class="status-dot${dot}"></div>
           <div><div class="provider-name"><span>${escapeHtml(profile.displayName || 'Provider')}</span><span class="badge">${escapeHtml(profile.protocolLabel || profile.provider || 'provider')}</span>${defaultBadge}</div><div class="provider-meta">${escapeHtml(meta)}</div></div>
           ${action}
-        </button>`;
+        </div>`;
       }).join('');
-      document.querySelectorAll('[data-provider-id]').forEach(button => {
+      document.querySelectorAll('[data-provider-select]').forEach(button => {
         button.onclick = async () => {
-          if (button.dataset.presetOnly === '1') {
-            const preset = providerPresets.find(item => item.displayName === button.dataset.presetName);
-            openProviderModal(preset ? preset.id : 'deepseek');
-            return;
-          }
-          render(await api('/api/provider/select', {id: button.dataset.providerId}));
+          render(await api('/api/provider/select', {id: button.dataset.providerSelect}));
+        };
+      });
+      document.querySelectorAll('[data-provider-add]').forEach(button => {
+        button.onclick = () => {
+          const preset = providerPresets.find(item => item.displayName === button.dataset.providerAdd);
+          openProviderModal(preset ? preset.id : 'deepseek');
+        };
+      });
+      document.querySelectorAll('[data-provider-edit]').forEach(button => {
+        button.onclick = () => editProviderProfile(button.dataset.providerEdit || '', profiles);
+      });
+      document.querySelectorAll('[data-provider-delete]').forEach(button => {
+        button.onclick = async () => {
+          if (!confirm('删除这个服务商配置？')) return;
+          render(await api('/api/provider/delete', {id: button.dataset.providerDelete}));
         };
       });
     }
     function setProviderSubmitting(active, action) {
       providerSubmitting = active;
       $('addProviderProfile').disabled = active;
-      $('addProviderProfile').textContent = active && action === 'add' ? '添加中...' : '添加';
+      const label = editingProviderId ? '保存' : '添加';
+      $('addProviderProfile').textContent = active ? '处理中...' : label;
     }
     async function runProviderAction(action) {
       if (providerSubmitting) return;
       setProviderSubmitting(true, action);
-      showProviderResult({ok: true, message: '正在添加服务商...'});
+      showProviderResult({ok: true, message: editingProviderId ? '正在更新服务商...' : '正在添加服务商...'});
       try {
-        const path = '/api/provider/add';
-        const state = await api(path, providerPayload());
+        const payload = providerPayload();
+        if (editingProviderId) payload.id = editingProviderId;
+        const path = editingProviderId ? '/api/provider/update' : '/api/provider/add';
+        const state = await api(path, payload);
         if (state.providerSave && state.providerSave.ok) closeProviderModal();
         render(state);
       } finally {
@@ -3665,6 +5732,8 @@ def render_desktop_html() -> str:
       });
     }
     function openProviderModal(presetId) {
+      editingProviderId = '';
+      $('addProviderProfile').textContent = '添加';
       $('providerModal').classList.add('active');
       $('providerModal').setAttribute('aria-hidden', 'false');
       applyProviderPreset(presetId || selectedProviderPreset || 'deepseek');
@@ -3672,6 +5741,30 @@ def render_desktop_html() -> str:
     function closeProviderModal() {
       $('providerModal').classList.remove('active');
       $('providerModal').setAttribute('aria-hidden', 'true');
+      editingProviderId = '';
+      $('addProviderProfile').textContent = '添加';
+    }
+    function editProviderProfile(profileId, profiles) {
+      const profile = profiles.find(item => item.id === profileId);
+      if (!profile) return;
+      editingProviderId = profileId;
+      selectedProviderPreset = '';
+      $('providerDisplayName').value = profile.displayName || '';
+      $('providerNote').value = profile.note || '';
+      $('providerBaseUrl').value = profile.baseUrl || '';
+      $('providerProtocol').value = profile.provider || 'openai-compatible';
+      $('providerModel').value = profile.model || '';
+      $('providerToolSearch').checked = profile.toolSearchEnabled !== false;
+      const apiKeyEnv = profile.apiKeyEnv || 'OPENAI_API_KEY';
+      const select = $('providerAuthLabel');
+      if (![...select.options].some(option => option.value === apiKeyEnv)) {
+        select.add(new Option(`Bearer Token (${apiKeyEnv})`, apiKeyEnv));
+      }
+      select.value = apiKeyEnv;
+      $('addProviderProfile').textContent = '保存';
+      $('providerModal').classList.add('active');
+      $('providerModal').setAttribute('aria-hidden', 'false');
+      renderProviderPresetPills();
     }
     function applyProviderPreset(presetId) {
       selectedProviderPreset = presetId;
@@ -3692,24 +5785,101 @@ def render_desktop_html() -> str:
     }
     function renderGeneralSettings(state) {
       const settings = state.generalSettings || {};
+      desktopTheme = settings.theme || 'pure';
+      desktopLanguage = settings.language || 'zh-CN';
+      desktopOutputStyle = settings.outputStyle || 'default';
+      desktopPermissionMode = settings.permissionMode || 'ask';
+      desktopNetworkMode = settings.networkMode || 'direct';
+      desktopWebSearchProvider = settings.webSearchProvider || 'auto';
+      desktopDataDirMode = settings.dataDirMode || 'system';
+      applyTheme(desktopTheme);
+      applyLanguage(desktopLanguage);
       desktopSendMode = settings.sendMode || 'modifier-enter';
       desktopNotificationsEnabled = !!settings.notificationsEnabled;
-      $('requireCommandApproval').checked = settings.requireCommandApproval !== false;
+      $('replyLanguage').value = settings.replyLanguage || 'default';
+      $('requireCommandApproval').checked = settings.requireCommandApproval !== false && desktopPermissionMode !== 'skip';
+      $('requireCommandApproval').disabled = desktopPermissionMode === 'skip';
+      $('thinkingEnabled').checked = settings.thinkingEnabled !== false;
+      $('autoMemoryEnabled').checked = !!settings.autoMemoryEnabled;
+      $('traceEnabled').checked = settings.traceEnabled !== false;
       $('notificationsEnabled').checked = desktopNotificationsEnabled;
       $('uiScale').value = String(settings.uiScale || 100);
       $('uiScaleValue').textContent = `${settings.uiScale || 100}%`;
       document.documentElement.style.zoom = `${settings.uiScale || 100}%`;
-      document.querySelectorAll('[data-send-mode]').forEach(button => {
-        button.classList.toggle('active', button.dataset.sendMode === desktopSendMode);
-      });
+      $('manualProxy').value = settings.manualProxy || '';
+      $('aiRequestTimeoutSeconds').value = String(settings.aiRequestTimeoutSeconds || 600);
+      $('webfetchPreflightSkip').checked = settings.webfetchPreflightSkip !== false;
+      $('tavilyApiKeyEnv').value = settings.tavilyApiKeyEnv || 'TAVILY_API_KEY';
+      $('braveApiKeyEnv').value = settings.braveApiKeyEnv || 'BRAVE_SEARCH_API_KEY';
+      $('portableDataDir').value = settings.portableDataDir || '';
+      $('actualDataDir').textContent = settings.actualDataDir || settings.configFile || '-';
+      $('tracePath').textContent = settings.actualDataDir ? `${settings.actualDataDir}/traces` : '-';
+      renderEnvStatus('tavilyApiKeyStatus', settings.tavilyApiKeyPresent, settings.tavilyApiKeyEnv || 'TAVILY_API_KEY');
+      renderEnvStatus('braveApiKeyStatus', settings.braveApiKeyPresent, settings.braveApiKeyEnv || 'BRAVE_SEARCH_API_KEY');
+      setActiveByData('[data-theme]', 'theme', desktopTheme);
+      setActiveByData('[data-language]', 'language', desktopLanguage);
+      setActiveByData('[data-output-style]', 'outputStyle', desktopOutputStyle);
+      setActiveByData('[data-permission-mode]', 'permissionMode', desktopPermissionMode);
+      setActiveByData('[data-send-mode]', 'sendMode', desktopSendMode);
+      setActiveByData('[data-network-mode]', 'networkMode', desktopNetworkMode);
+      setActiveByData('[data-web-search-provider]', 'webSearchProvider', desktopWebSearchProvider);
+      setStorageMode(desktopDataDirMode, false);
     }
     function generalPayload() {
       return {
+        theme: desktopTheme,
+        language: desktopLanguage,
+        replyLanguage: $('replyLanguage').value,
+        outputStyle: desktopOutputStyle,
+        permissionMode: desktopPermissionMode,
+        thinkingEnabled: $('thinkingEnabled').checked,
+        autoMemoryEnabled: $('autoMemoryEnabled').checked,
+        traceEnabled: $('traceEnabled').checked,
         requireCommandApproval: $('requireCommandApproval').checked,
         sendMode: desktopSendMode,
         uiScale: Number($('uiScale').value),
-        notificationsEnabled: $('notificationsEnabled').checked
+        notificationsEnabled: $('notificationsEnabled').checked,
+        networkMode: desktopNetworkMode,
+        manualProxy: $('manualProxy').value.trim(),
+        aiRequestTimeoutSeconds: Number($('aiRequestTimeoutSeconds').value),
+        webfetchPreflightSkip: $('webfetchPreflightSkip').checked,
+        webSearchProvider: desktopWebSearchProvider,
+        tavilyApiKeyEnv: $('tavilyApiKeyEnv').value.trim(),
+        braveApiKeyEnv: $('braveApiKeyEnv').value.trim(),
+        dataDirMode: desktopDataDirMode,
+        portableDataDir: $('portableDataDir').value.trim()
       };
+    }
+    function setActiveByData(selector, key, value) {
+      document.querySelectorAll(selector).forEach(button => {
+        button.classList.toggle('active', button.dataset[key] === value);
+      });
+    }
+    function renderEnvStatus(id, present, envName) {
+      const box = $(id);
+      box.textContent = present ? `已检测到 ${envName}` : `未检测到 ${envName}`;
+      box.classList.toggle('ok', !!present);
+    }
+    function setStorageMode(mode, update = true) {
+      desktopDataDirMode = mode;
+      document.querySelectorAll('[data-data-dir-mode]').forEach(card => {
+        card.classList.toggle('active', card.dataset.dataDirMode === mode);
+      });
+      if (update && mode === 'system') $('portableDataDir').value = $('portableDataDir').value || '';
+      if (update) markGeneralDirty('数据目录模式已选择，保存后生效。');
+    }
+    function applyTheme(theme) {
+      document.body.classList.toggle('theme-classic', theme === 'classic');
+      document.body.classList.toggle('theme-dark', theme === 'dark');
+    }
+    function applyLanguage(language) {
+      const langMap = {'zh-CN': 'zh-CN', 'zh-TW': 'zh-TW', en: 'en', ja: 'ja', ko: 'ko'};
+      document.documentElement.lang = langMap[language] || 'zh-CN';
+    }
+    function markGeneralDirty(message = '设置已修改，点击保存后写入本地配置。') {
+      const box = $('generalResult');
+      box.textContent = message;
+      box.classList.remove('ok', 'bad');
     }
     function showGeneralResult(result) {
       const box = $('generalResult');
@@ -3853,15 +6023,42 @@ def render_desktop_html() -> str:
         const args = (server.args || []).join(' ');
         const commandLine = server.url || [server.command, args].filter(Boolean).join(' ');
         const envKeys = (server.envKeys || []).length ? `环境变量：${server.envKeys.join(', ')}` : '无环境变量声明';
+        const statusClass = server.status === 'Configured' ? 'ok' : server.status === 'Disabled' ? '' : 'hot';
+        const nextEnabled = !server.enabled;
         return `<div class="mcp-server-card">
-          <div class="mcp-server-head"><div class="mcp-server-name">${escapeHtml(server.name || 'unnamed')}</div><span class="badge">${escapeHtml(server.transport || 'stdio')}</span></div>
+          <div class="mcp-server-head">
+            <div class="mcp-server-name">${escapeHtml(server.name || 'unnamed')}</div>
+            <div class="mcp-card-actions">
+              <span class="badge ${statusClass}">${escapeHtml(server.status || 'Configured')}</span>
+              <span class="badge">${escapeHtml(server.transport || 'stdio')}</span>
+              <button class="provider-card-action" data-mcp-toggle="${escapeHtml(server.name || '')}" data-mcp-enabled="${nextEnabled ? '1' : '0'}">${server.enabled ? '禁用' : '启用'}</button>
+              <button class="provider-card-action danger" data-mcp-delete="${escapeHtml(server.name || '')}">删除</button>
+            </div>
+          </div>
           <div class="mcp-server-meta">${escapeHtml(commandLine || '未配置启动命令')}</div>
           <div class="mcp-server-meta">${escapeHtml(envKeys)}</div>
         </div>`;
       }).join('');
+      document.querySelectorAll('[data-mcp-toggle]').forEach(button => {
+        button.onclick = async () => {
+          render(await api('/api/mcp/toggle', {name: button.dataset.mcpToggle, enabled: button.dataset.mcpEnabled === '1'}));
+        };
+      });
+      document.querySelectorAll('[data-mcp-delete]').forEach(button => {
+        button.onclick = async () => {
+          if (!confirm('删除这个 MCP 服务？')) return;
+          render(await api('/api/mcp/delete', {name: button.dataset.mcpDelete}));
+        };
+      });
     }
     async function refreshMcpSettings() {
       renderMcpSettings(await api('/api/mcp'));
+    }
+    function showMcpResult(result) {
+      const box = $('mcpResult');
+      box.textContent = result.message;
+      box.classList.toggle('ok', !!result.ok);
+      box.classList.toggle('bad', !result.ok);
     }
     function showMcpListView() {
       $('mcpSettingsPage').classList.remove('form-mode');
@@ -3981,43 +6178,81 @@ def render_desktop_html() -> str:
     }
     function renderSkillsSettings(skillsState) {
       const skills = skillsState.skills || [];
-      $('skillsDir').textContent = skillsState.skillsDir || '-';
+      latestSkillItems = skills;
       $('skillsTotal').textContent = String(skillsState.total || 0);
-      $('skillsDescribed').textContent = String(skillsState.withDescription || 0);
       $('skillsSources').textContent = String(skillsState.sources || 0);
-      $('skillsChars').textContent = formatCompactNumber(skillsState.estimatedChars || 0);
+      const totalTokens = skills.reduce((sum, skill) => sum + Number(skill.estimatedTokens || Math.ceil(Number(skill.contentLength || 0) / 4)), 0);
+      $('skillsTokens').textContent = `约 ${formatCompactNumber(totalTokens)}`;
       const result = $('skillsResult');
       if (skillsState.ok === false) {
         result.textContent = `技能读取失败：${skillsState.error || '未知错误'}`;
         result.classList.add('bad');
         result.classList.remove('ok');
       } else {
-        result.textContent = '技能索引已读取。这里只展示摘要，不加载完整正文。';
+        result.textContent = `已读取 ${skills.length} 个技能。这里只展示摘要，不加载完整正文。`;
         result.classList.add('ok');
         result.classList.remove('bad');
       }
-      renderSkillList(skills);
+      renderSkillList(latestSkillItems);
     }
     function renderSkillList(skills) {
       const query = ($('skillsSearch').value || '').trim().toLowerCase();
       const filtered = skills.filter(skill => {
-        const text = [skill.name, skill.description, skill.relativePath, skill.source].join(' ').toLowerCase();
+        const text = [skill.name, skill.displayName, skill.description, skill.relativePath, skill.source, skill.sourceName, skill.version].join(' ').toLowerCase();
         return !query || text.includes(query);
       });
       $('skillsFilterCount').textContent = `${filtered.length}/${skills.length}`;
       const list = $('skillsList');
       if (!filtered.length) {
         list.innerHTML = '<div class="skill-empty">暂无匹配技能。</div>';
+        list.classList.remove('split');
         return;
       }
-      list.innerHTML = filtered.map(skill => {
-        const description = skill.description || '没有描述。';
-        const meta = `${skill.relativePath || skill.path || ''} · ${skill.updated || '未知时间'} · ${formatCompactNumber(skill.sizeBytes || 0)}B`;
-        return `<div class="skill-card">
-          <div class="skill-head"><div class="skill-name">${escapeHtml(skill.name || 'unnamed')}</div><span class="badge">${escapeHtml(skill.source || 'user')}</span></div>
-          <div class="skill-description">${escapeHtml(description)}</div>
-          <div class="skill-meta">${escapeHtml(meta)}</div>
-        </div>`;
+      const order = ['project', 'user', 'plugin'];
+      const grouped = {};
+      filtered.forEach(skill => {
+        const source = skill.source || 'user';
+        if (!grouped[source]) grouped[source] = [];
+        grouped[source].push(skill);
+      });
+      const groups = order.filter(source => grouped[source]?.length).concat(Object.keys(grouped).filter(source => !order.includes(source)));
+      list.classList.toggle('split', groups.length >= 2);
+      const sourceLabel = { project: '项目', user: '用户', plugin: '插件' };
+      const sourceIcon = { project: '▣', user: '◎', plugin: '⌘' };
+      list.innerHTML = groups.map(source => {
+        const group = grouped[source] || [];
+        const tokenCount = group.reduce((sum, skill) => sum + Number(skill.estimatedTokens || Math.ceil(Number(skill.contentLength || 0) / 4)), 0);
+        const label = sourceLabel[source] || source;
+        return `<section class="skill-group">
+          <div class="skill-group-head">
+            <div>
+              <div class="skill-source-row">
+                <span class="skill-source-icon ${escapeHtml(source)}">${escapeHtml(sourceIcon[source] || '✦')}</span>
+                <span class="skill-source-title">${escapeHtml(label)}</span>
+                <span class="skill-source-count">${group.length}</span>
+              </div>
+              <div class="skill-source-hint">${escapeHtml(label)}中有 ${group.length} 个技能可用</div>
+            </div>
+            <div class="skill-source-tokens">约 ${formatCompactNumber(tokenCount)} tokens</div>
+          </div>
+          <div class="skill-list">
+            ${group.map(skill => {
+              const description = skill.description || '没有描述。';
+              const tokenText = `约 ${formatCompactNumber(skill.estimatedTokens || Math.ceil(Number(skill.contentLength || 0) / 4))} tokens`;
+              const version = skill.version ? `<span class="badge">v${escapeHtml(skill.version)}</span>` : '';
+              const slash = skill.userInvocable ? '<span class="badge">/斜杠命令</span>' : '';
+              return `<button class="skill-card" type="button" title="${escapeHtml(skill.path || '')}">
+                <span class="skill-card-icon">✦</span>
+                <span>
+                  <span class="skill-name-row"><span class="skill-name">${escapeHtml(skill.displayName || skill.name || 'unnamed')}</span>${version}${slash}</span>
+                  <span class="skill-description">${escapeHtml(description)}</span>
+                  <span class="skill-meta"><span>${escapeHtml(skill.sourceName || label)}</span><span>${escapeHtml(tokenText)}</span><span>${escapeHtml(skill.relativePath || '')}</span></span>
+                </span>
+                <span class="skill-card-arrow">›</span>
+              </button>`;
+            }).join('')}
+          </div>
+        </section>`;
       }).join('');
     }
     async function refreshSkillsSettings() {
@@ -4111,6 +6346,191 @@ def render_desktop_html() -> str:
       } finally {
         button.disabled = false;
         button.textContent = '刷新';
+      }
+    }
+    function renderPluginsSettings(pluginsState) {
+      const plugins = pluginsState.plugins || [];
+      $('pluginsTotal').textContent = String(pluginsState.total || 0);
+      $('pluginsWithSkills').textContent = String(pluginsState.withSkills || 0);
+      $('pluginsWithMcp').textContent = String(pluginsState.withMcp || 0);
+      const result = $('pluginsResult');
+      if (pluginsState.ok === false) {
+        result.textContent = `插件读取失败：${pluginsState.error || '未知错误'}`;
+        result.classList.add('bad');
+        result.classList.remove('ok');
+      } else {
+        result.textContent = `已读取 ${plugins.length} 个本机插件安装项。`;
+        result.classList.add('ok');
+        result.classList.remove('bad');
+      }
+      const list = $('pluginsList');
+      if (!plugins.length) {
+        list.innerHTML = '<div class="skill-empty">暂无本机插件缓存。</div>';
+        return;
+      }
+      list.innerHTML = `<section class="skill-group">
+        <div class="skill-group-head">
+          <div>
+            <div class="skill-source-row"><span class="skill-source-icon plugin">⌘</span><span class="skill-source-title">本机插件</span><span class="skill-source-count">${plugins.length}</span></div>
+            <div class="skill-source-hint">展示已安装插件的 Skills、Agents、命令和 MCP 入口数量。</div>
+          </div>
+          <div class="skill-source-tokens">${escapeHtml((pluginsState.roots || []).filter(Boolean).join(' · '))}</div>
+        </div>
+        <div class="skill-list">
+          ${plugins.map(plugin => {
+            const version = plugin.version ? `<span class="badge">v${escapeHtml(plugin.version)}</span>` : '';
+            const installed = plugin.installedAt ? `安装于 ${escapeHtml(String(plugin.installedAt).slice(0, 10))}` : '本机插件目录';
+            return `<button class="skill-card" type="button" title="${escapeHtml(plugin.path || '')}">
+              <span class="skill-card-icon">⌘</span>
+              <span>
+                <span class="skill-name-row"><span class="skill-name">${escapeHtml(plugin.name || 'unnamed')}</span>${version}<span class="badge">${escapeHtml(plugin.source || '插件')}</span></span>
+                <span class="skill-description">${escapeHtml(installed)}</span>
+                <span class="skill-meta"><span>${escapeHtml(plugin.path || '')}</span><span>${Number(plugin.skillCount || 0)} skills</span><span>${Number(plugin.agentCount || 0)} agents</span><span>${Number(plugin.commandCount || 0)} commands</span><span>${Number(plugin.hookCount || 0)} hooks</span><span>${Number(plugin.mcpCount || 0)} MCP</span></span>
+              </span>
+              <span class="skill-card-arrow">›</span>
+            </button>`;
+          }).join('')}
+        </div>
+      </section>`;
+    }
+    async function refreshPluginsSettings() {
+      const button = $('refreshPluginsSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderPluginsSettings(await api('/api/plugins'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderComputerUseSettings(computerUse) {
+      const capabilities = computerUse.capabilities || [];
+      $('computerUsePlatform').textContent = computerUse.platform || '-';
+      $('computerUseAvailable').textContent = `${computerUse.available || 0}/${computerUse.total || capabilities.length}`;
+      $('computerUsePermission').textContent = computerUse.permission || '-';
+      $('computerUseNote').textContent = computerUse.note || '本机能力检查已读取。';
+      const list = $('computerUseCapabilities');
+      if (!capabilities.length) {
+        list.innerHTML = '<div class="mcp-empty">暂无能力检查结果。</div>';
+        return;
+      }
+      list.innerHTML = capabilities.map(item => {
+        const badge = item.status === '可用' ? 'ok' : item.status === '未检测到' ? 'hot' : '';
+        return `<div class="agent-card">
+          <div class="agent-icon">◉</div>
+          <div>
+            <div class="agent-name-row"><span class="agent-name">${escapeHtml(item.name || '能力')}</span><span class="badge ${badge}">${escapeHtml(item.status || '未知')}</span></div>
+            <div class="agent-instructions">${escapeHtml(item.detail || '')}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    async function refreshComputerUseSettings() {
+      const button = $('refreshComputerUseSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderComputerUseSettings(await api('/api/computer-use'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderTokenUsageSettings(tokenState) {
+      const items = tokenState.items || [];
+      $('tokenSessionCount').textContent = String(tokenState.sessionCount || 0);
+      $('tokenMessageCount').textContent = String(tokenState.messageCount || 0);
+      $('tokenEstimated').textContent = `约 ${formatCompactNumber(tokenState.estimatedTokens || 0)}`;
+      $('tokenMax').textContent = formatCompactNumber(tokenState.maxTokens || 0);
+      $('tokenUsageResult').textContent = tokenState.note || '本机会话 token 估算已读取。';
+      const list = $('tokenUsageList');
+      if (!items.length) {
+        list.innerHTML = '<div class="memory-empty">暂无会话用量记录。</div>';
+        return;
+      }
+      list.innerHTML = items.map(item => `<div class="memory-card">
+        <div class="skill-head"><div class="memory-title">${escapeHtml(item.title || item.id || '未命名会话')}</div><span class="badge">${escapeHtml(item.updatedLabel || '')}</span></div>
+        <div class="memory-summary">${Number(item.messages || 0)} 条消息 · 约 ${formatCompactNumber(item.estimatedTokens || 0)} tokens</div>
+        <div class="memory-meta">${escapeHtml(item.id || '')}</div>
+      </div>`).join('');
+    }
+    async function refreshTokenUsageSettings() {
+      const button = $('refreshTokenUsageSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderTokenUsageSettings(await api('/api/token-usage'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderTraceSettings(traceState) {
+      const files = traceState.files || [];
+      $('traceEnabledBadge').textContent = traceState.enabled ? '已启用' : '已关闭';
+      $('traceEnabledBadge').className = traceState.enabled ? 'badge ok' : 'badge';
+      $('traceSettingsStatus').textContent = traceState.enabled ? '新会话会继续写入本机 trace 目录。' : 'Trace 已关闭，可在通用页开启。';
+      $('traceDir').textContent = traceState.dir || '-';
+      $('traceFileCount').textContent = String(traceState.total || 0);
+      $('traceSize').textContent = `${formatCompactNumber(traceState.sizeBytes || 0)}B`;
+      $('traceDirExists').textContent = traceState.exists ? '存在' : '未创建';
+      const list = $('traceFileList');
+      if (!files.length) {
+        list.innerHTML = '<div class="memory-empty">暂无 Trace 文件。</div>';
+        return;
+      }
+      list.innerHTML = files.map(file => `<div class="memory-card">
+        <div class="skill-head"><div class="memory-title">${escapeHtml(file.name || 'trace')}</div><span class="badge">${escapeHtml(file.updated || '')}</span></div>
+        <div class="memory-summary">${escapeHtml(file.relativePath || '')}</div>
+        <div class="memory-meta">${formatCompactNumber(file.sizeBytes || 0)}B · ${escapeHtml(file.path || '')}</div>
+      </div>`).join('');
+    }
+    async function refreshTraceSettings() {
+      const button = $('refreshTraceSettings');
+      button.disabled = true;
+      button.textContent = '刷新中...';
+      try {
+        renderTraceSettings(await api('/api/trace'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '刷新';
+      }
+    }
+    function renderDiagnosticsSettings(diag) {
+      const checks = diag.checks || [];
+      $('diagnosticsPass').textContent = String(diag.pass || 0);
+      $('diagnosticsWarn').textContent = String(diag.warn || 0);
+      $('diagnosticsFail').textContent = String(diag.fail || 0);
+      const result = $('diagnosticsResult');
+      result.textContent = diag.ok ? `诊断通过：${diag.workdir || ''}` : `诊断发现失败项：${diag.workdir || ''}`;
+      result.classList.toggle('ok', !!diag.ok);
+      result.classList.toggle('bad', !diag.ok);
+      const list = $('diagnosticsChecks');
+      if (!checks.length) {
+        list.innerHTML = '<div class="mcp-empty">暂无诊断项。</div>';
+        return;
+      }
+      list.innerHTML = checks.map(check => {
+        const badge = check.status === 'pass' ? 'ok' : check.status === 'fail' ? 'hot' : '';
+        return `<div class="agent-card">
+          <div class="agent-icon">≋</div>
+          <div>
+            <div class="agent-name-row"><span class="agent-name">${escapeHtml(check.name || '检查')}</span><span class="badge ${badge}">${escapeHtml(check.status || 'unknown')}</span></div>
+            <div class="agent-instructions">${escapeHtml(check.detail || '')}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    async function refreshDiagnosticsSettings() {
+      const button = $('refreshDiagnosticsSettings');
+      button.disabled = true;
+      button.textContent = '诊断中...';
+      try {
+        renderDiagnosticsSettings(await api('/api/diagnostics'));
+      } finally {
+        button.disabled = false;
+        button.textContent = '重新诊断';
       }
     }
     function showCompletionNotification(state) {
@@ -4419,6 +6839,11 @@ def render_desktop_html() -> str:
         $('agentsSettingsPanel').classList.toggle('active', view === 'agents');
         $('skillsSettingsPanel').classList.toggle('active', view === 'skills');
         $('memorySettingsPanel').classList.toggle('active', view === 'memory');
+        $('pluginsSettingsPanel').classList.toggle('active', view === 'plugins');
+        $('computerUseSettingsPanel').classList.toggle('active', view === 'computerUse');
+        $('tokenUsageSettingsPanel').classList.toggle('active', view === 'tokenUsage');
+        $('traceSettingsPanel').classList.toggle('active', view === 'trace');
+        $('diagnosticsSettingsPanel').classList.toggle('active', view === 'diagnostics');
         if (view === 'memory' && selectedMemoryId) selectMemory(selectedMemoryId);
       };
     });
@@ -4426,10 +6851,78 @@ def render_desktop_html() -> str:
       button.onclick = () => {
         desktopSendMode = button.dataset.sendMode;
         document.querySelectorAll('[data-send-mode]').forEach(item => item.classList.toggle('active', item === button));
+        markGeneralDirty('发送方式已选择，保存后新输入会话继续使用。');
+      };
+    });
+    document.querySelectorAll('[data-theme]').forEach(button => {
+      button.onclick = () => {
+        desktopTheme = button.dataset.theme || 'pure';
+        setActiveByData('[data-theme]', 'theme', desktopTheme);
+        applyTheme(desktopTheme);
+        markGeneralDirty('主题已预览，保存后下次打开继续使用。');
+      };
+    });
+    document.querySelectorAll('[data-language]').forEach(button => {
+      button.onclick = () => {
+        desktopLanguage = button.dataset.language || 'zh-CN';
+        setActiveByData('[data-language]', 'language', desktopLanguage);
+        applyLanguage(desktopLanguage);
+        markGeneralDirty('显示语言偏好已选择，保存后写入配置。');
+      };
+    });
+    document.querySelectorAll('[data-output-style]').forEach(button => {
+      button.onclick = () => {
+        desktopOutputStyle = button.dataset.outputStyle || 'default';
+        setActiveByData('[data-output-style]', 'outputStyle', desktopOutputStyle);
+        markGeneralDirty('输出风格已选择，保存后进入新请求的系统提示。');
+      };
+    });
+    document.querySelectorAll('[data-permission-mode]').forEach(button => {
+      button.onclick = () => {
+        desktopPermissionMode = button.dataset.permissionMode || 'ask';
+        setActiveByData('[data-permission-mode]', 'permissionMode', desktopPermissionMode);
+        $('requireCommandApproval').disabled = desktopPermissionMode === 'skip';
+        if (desktopPermissionMode === 'skip') $('requireCommandApproval').checked = false;
+        markGeneralDirty('权限模式已选择，保存后影响命令审批策略。');
+      };
+    });
+    document.querySelectorAll('[data-network-mode]').forEach(button => {
+      button.onclick = () => {
+        desktopNetworkMode = button.dataset.networkMode || 'direct';
+        setActiveByData('[data-network-mode]', 'networkMode', desktopNetworkMode);
+        markGeneralDirty('网络模式已选择，保存后影响后续服务商请求。');
+      };
+    });
+    document.querySelectorAll('[data-web-search-provider]').forEach(button => {
+      button.onclick = () => {
+        desktopWebSearchProvider = button.dataset.webSearchProvider || 'auto';
+        setActiveByData('[data-web-search-provider]', 'webSearchProvider', desktopWebSearchProvider);
+        markGeneralDirty('WebSearch 模式已选择，保存后进入新请求偏好。');
+      };
+    });
+    document.querySelectorAll('[data-data-dir-mode]').forEach(card => {
+      card.onclick = () => setStorageMode(card.dataset.dataDirMode || 'system');
+    });
+    document.querySelectorAll('[data-timeout-step]').forEach(button => {
+      button.onclick = () => {
+        const next = Math.max(30, Math.min(1800, Number($('aiRequestTimeoutSeconds').value || 600) + Number(button.dataset.timeoutStep || 0)));
+        $('aiRequestTimeoutSeconds').value = String(next);
+        markGeneralDirty('AI 请求超时已修改，保存后影响后续模型请求。');
       };
     });
     $('uiScale').addEventListener('input', () => {
       $('uiScaleValue').textContent = `${$('uiScale').value}%`;
+      document.documentElement.style.zoom = `${$('uiScale').value}%`;
+      markGeneralDirty('界面缩放已预览，保存后下次打开继续使用。');
+    });
+    [
+      'replyLanguage', 'thinkingEnabled', 'autoMemoryEnabled', 'traceEnabled',
+      'notificationsEnabled', 'requireCommandApproval', 'manualProxy',
+      'aiRequestTimeoutSeconds', 'webfetchPreflightSkip', 'tavilyApiKeyEnv',
+      'braveApiKeyEnv', 'portableDataDir'
+    ].forEach(id => {
+      const element = $(id);
+      if (element) element.addEventListener('change', () => markGeneralDirty());
     });
     $('saveGeneralSettings').onclick = saveGeneralSettings;
     $('saveH5Settings').onclick = saveH5Settings;
@@ -4450,10 +6943,12 @@ def render_desktop_html() -> str:
     $('refreshSkillsSettings').onclick = refreshSkillsSettings;
     $('refreshMemorySettings').onclick = refreshMemorySettings;
     $('refreshMemoryInline').onclick = refreshMemorySettings;
-    $('skillsSearch').addEventListener('input', async () => {
-      const state = await api('/api/skills');
-      renderSkillsSettings(state);
-    });
+    $('refreshPluginsSettings').onclick = refreshPluginsSettings;
+    $('refreshComputerUseSettings').onclick = refreshComputerUseSettings;
+    $('refreshTokenUsageSettings').onclick = refreshTokenUsageSettings;
+    $('refreshTraceSettings').onclick = refreshTraceSettings;
+    $('refreshDiagnosticsSettings').onclick = refreshDiagnosticsSettings;
+    $('skillsSearch').addEventListener('input', () => renderSkillList(latestSkillItems));
     $('memorySearch').addEventListener('input', renderMemoryList);
     async function switchProject(path) {
       const target = (path || $('projectPathInput').value).trim();
